@@ -4,10 +4,11 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
+import com.plantdoctor.config.NvidiaProperties;
 import com.plantdoctor.config.SeedProperties;
 
 @SpringBootApplication
-@EnableConfigurationProperties(SeedProperties.class)
+@EnableConfigurationProperties({SeedProperties.class, NvidiaProperties.class})
 public class PlantDoctorApiApplication {
 
 	public static void main(String[] args) {

@@ -36,7 +36,7 @@ public class PlantDiseaseSeedRunner implements ApplicationRunner {
 		logSeedResult(result);
 	}
 
-	static void logSeedResult(SeedResult result) {
+	public static void logSeedResult(SeedResult result) {
 		log.info(
 				"Seed finished for {} — rows: {}, plants created: {}, diseases inserted: {}, skipped: {}, errors: {}",
 				result.csvPath(),

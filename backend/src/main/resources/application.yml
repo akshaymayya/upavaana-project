@@ -22,3 +22,13 @@ app:
   seed:
     enabled: ${SEED_ON_STARTUP:false}
     csv-path: ${SEED_CSV_PATH:./plant-disease-seed-template.csv}
+
+nvidia:
+  api-key: ${NVIDIA_API_KEY:}
+  base-url: ${NVIDIA_BASE_URL:https://integrate.api.nvidia.com/v1}
+  vision-model: ${NVIDIA_VISION_MODEL:meta/llama-3.2-11b-vision-instruct}
+  text-model: ${NVIDIA_TEXT_MODEL:meta/llama-3.1-8b-instruct}
+  deepseek-api-key: ${DEEPSEEK_API_KEY:}
+  deepseek-base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com/v1}
+  deepseek-model: ${DEEPSEEK_MODEL:deepseek-v4-pro}
+

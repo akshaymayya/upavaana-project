@@ -1,0 +1,407 @@
+package com.plantdoctor.service;
+
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.plantdoctor.config.NvidiaProperties;
+import com.plantdoctor.entity.Disease;
+import com.plantdoctor.service.DiseaseCandidate.MatchType;
+
+@Service
+public class NvidiaClientService {
+
+	private static final Logger log = LoggerFactory.getLogger(NvidiaClientService.class);
+
+	private final NvidiaProperties nvidiaProperties;
+	private final RestTemplate restTemplate;
+	private final RestTemplate deepSeekRestTemplate;
+	private final ObjectMapper objectMapper;
+
+	public NvidiaClientService(NvidiaProperties nvidiaProperties) {
+		this.nvidiaProperties = nvidiaProperties;
+		this.objectMapper = new ObjectMapper();
+		
+		// Fast timeout for NVIDIA vision/text models (small models)
+		SimpleClientHttpRequestFactory fastFactory = new SimpleClientHttpRequestFactory();
+		fastFactory.setConnectTimeout(25000); // 25 seconds
+		fastFactory.setReadTimeout(25000);    // 25 seconds
+		this.restTemplate = new RestTemplate(fastFactory);
+
+		// Longer timeout for DeepSeek V4 Pro (large reasoning model)
+		SimpleClientHttpRequestFactory deepSeekFactory = new SimpleClientHttpRequestFactory();
+		deepSeekFactory.setConnectTimeout(30000); // 30 seconds
+		deepSeekFactory.setReadTimeout(90000);    // 90 seconds - reasoning takes time
+		this.deepSeekRestTemplate = new RestTemplate(deepSeekFactory);
+	}
+
+	/**
+	 * Calls the Nvidia Vision-capable model to get a description of the plant and symptoms.
+	 */
+	public String analyzeImage(byte[] imageBytes, String mimeType) {
+		if (!StringUtils.hasText(nvidiaProperties.getApiKey())) {
+			throw new IllegalStateException("NVIDIA_API_KEY is not configured.");
+		}
+
+		String base64Image = Base64.getEncoder().encodeToString(imageBytes);
+		String imageUrl = "data:" + mimeType + ";base64," + base64Image;
+
+		String url = nvidiaProperties.getBaseUrl() + "/chat/completions";
+
+		HttpHeaders headers = new HttpHeaders();
+		headers.setContentType(MediaType.APPLICATION_JSON);
+		headers.setBearerAuth(nvidiaProperties.getApiKey());
+
+		Map<String, Object> textPart = Map.of(
+				"type", "text",
+				"text", "You are an expert plant pathologist and botanist. Analyze the uploaded photo carefully.\n\n" +
+						"First describe LEAF MORPHOLOGY before naming the plant:\n" +
+						"- Leaf shape (oval, lanceolate, lobed, compound, etc.)\n" +
+						"- Edge/margin (smooth, serrated, wavy)\n" +
+						"- Texture (thick/succulent, thin, leathery, fuzzy)\n" +
+						"- Venation pattern if visible\n" +
+						"- Growth habit clues (woody shrub/tree branch, herbaceous stem, vine, succulent rosette)\n\n" +
+						"Then give your best plant identification. If uncertain, say so honestly — e.g. " +
+						"\"possibly X, or a similar woody ornamental with these leaf characteristics\" — " +
+						"rather than confidently guessing a poor match like lettuce for a woody shrub leaf.\n\n" +
+						"Finally list all visible symptoms in detail (color, pattern, location on leaf): " +
+						"spots, lesions, halos, yellowing, wilting, mold, pests, etc.\n\n" +
+						"Write a single cohesive paragraph covering morphology, plant guess (with uncertainty if needed), and symptoms."
+		);
+
+		Map<String, Object> imagePart = Map.of(
+				"type", "image_url",
+				"image_url", Map.of("url", imageUrl)
+		);
+
+		Map<String, Object> message = Map.of(
+				"role", "user",
+				"content", List.of(textPart, imagePart)
+		);
+
+		Map<String, Object> requestBody = Map.of(
+				"model", nvidiaProperties.getVisionModel(),
+				"messages", List.of(message),
+				"max_tokens", 1024
+		);
+
+		int maxAttempts = 2;
+		Exception lastException = null;
+		long startTime = System.currentTimeMillis();
+
+		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+			try {
+				log.info("Calling Nvidia Vision NIM model (attempt {}/{}): {}", attempt, maxAttempts, nvidiaProperties.getVisionModel());
+				long callStart = System.currentTimeMillis();
+				HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+				Map<?, ?> response = restTemplate.postForObject(url, entity, Map.class);
+				long callDuration = System.currentTimeMillis() - callStart;
+				log.info("Nvidia Vision NIM call succeeded in {} ms (attempt {}/{})", callDuration, attempt, maxAttempts);
+
+				if (response == null) {
+					throw new RuntimeException("Received empty response from NVIDIA NIM Vision API.");
+				}
+
+				List<?> choices = (List<?>) response.get("choices");
+				if (choices == null || choices.isEmpty()) {
+					throw new RuntimeException("No choices returned from NVIDIA NIM Vision API.");
+				}
+
+				Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+				Map<?, ?> responseMessage = (Map<?, ?>) choice.get("message");
+				return (String) responseMessage.get("content");
+
+			} catch (Exception ex) {
+				lastException = ex;
+				long callDuration = System.currentTimeMillis() - startTime;
+				log.warn("Nvidia Vision NIM call failed on attempt {}/{} after {} ms total: {}", attempt, maxAttempts, callDuration, ex.getMessage());
+				if (attempt < maxAttempts) {
+					try {
+						Thread.sleep(1000);
+					} catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+						throw new RuntimeException("Retry interrupted: " + ie.getMessage(), ie);
+					}
+				}
+			}
+		}
+
+		throw new RuntimeException("Error analyzing image via NVIDIA NIM (failed after " + maxAttempts + " attempts): " + lastException.getMessage(), lastException);
+	}
+
+	/**
+	 * Synthesizes final diagnosis from symptoms description and matching database diseases.
+	 */
+	public DiagnosisResult synthesizeDiagnosis(String symptomsDescription, List<DiseaseCandidate> candidateDiseases) {
+		if (!StringUtils.hasText(nvidiaProperties.getApiKey())) {
+			throw new IllegalStateException("NVIDIA_API_KEY is not configured.");
+		}
+
+		String url = nvidiaProperties.getBaseUrl() + "/chat/completions";
+
+		HttpHeaders headers = new HttpHeaders();
+		headers.setContentType(MediaType.APPLICATION_JSON);
+		headers.setBearerAuth(nvidiaProperties.getApiKey());
+
+		String diseasesText = formatCandidateSection(candidateDiseases);
+
+		String systemPrompt = "You are a strict plant pathologist assistant. Follow these rules exactly:\n" +
+				"\n" +
+				"RULE 1 — PLANT IDENTITY: The plant_name you output MUST come from the Vision Analysis description. Do not invent or rename the plant.\n" +
+				"RULE 2 — PLANT + SYMPTOM MATCH: For candidates labeled PLANT_NAME_MATCH, use the disease only if symptoms also align with the Vision Analysis.\n" +
+				"RULE 3 — SYMPTOM PATTERN MATCH: For candidates labeled SYMPTOM_PATTERN_MATCH, the plant in the DB may differ from the photo. " +
+				"If symptoms closely match, you MAY use that disease name and solution. In confidence_note, state that the pattern is consistent across species " +
+				"but the exact plant type could not be confirmed in our database.\n" +
+				"RULE 4 — NO MATCH: If no candidate fits, set disease_name to 'Unidentified Issue', is_healthy to false, and give generic care advice.\n" +
+				"RULE 5 — HEALTHY: If the Vision Analysis shows no disease symptoms, set disease_name to 'Healthy' and is_healthy to true.\n" +
+				"RULE 6 — OUTPUT: Return ONLY a raw JSON object. No markdown, no code fences.\n" +
+				"\n" +
+				"Output JSON fields (all required):\n" +
+				"{\n" +
+				"  \"plant_name\": \"Exact plant name from Vision Analysis\",\n" +
+				"  \"disease_name\": \"Matched disease name, or 'Unidentified Issue', or 'Healthy'\",\n" +
+				"  \"symptoms_matched\": \"Specific symptoms visible in the photo\",\n" +
+				"  \"solution\": \"Actionable, specific treatment steps\",\n" +
+				"  \"confidence_note\": \"High / Medium / Low + one-sentence reason\",\n" +
+				"  \"is_healthy\": false\n" +
+				"}";
+
+		String userPrompt = String.format(
+				"=== Vision Analysis (trust this for plant identification) ===\n%s\n\n" +
+				"=== Candidate Diseases from Database ===\n%s\n\n" +
+				"Apply all rules and return the diagnosis JSON.",
+				symptomsDescription,
+				diseasesText.isEmpty() ? "(No matching diseases found in database — synthesize your own expert advice)" : diseasesText
+		);
+
+		Map<String, Object> systemMessage = Map.of(
+				"role", "system",
+				"content", systemPrompt
+		);
+
+		Map<String, Object> userMessage = Map.of(
+				"role", "user",
+				"content", userPrompt
+		);
+
+		Map<String, Object> requestBody = Map.of(
+				"model", nvidiaProperties.getTextModel(),
+				"messages", List.of(systemMessage, userMessage),
+				"max_tokens", 800
+		);
+
+		int maxAttempts = 2;
+		Exception lastException = null;
+		long startTime = System.currentTimeMillis();
+
+		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+			try {
+				log.info("Calling Nvidia Text NIM model (attempt {}/{}): {}", attempt, maxAttempts, nvidiaProperties.getTextModel());
+				long callStart = System.currentTimeMillis();
+				HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+				Map<?, ?> response = restTemplate.postForObject(url, entity, Map.class);
+				long callDuration = System.currentTimeMillis() - callStart;
+				log.info("Nvidia Text NIM call succeeded in {} ms (attempt {}/{})", callDuration, attempt, maxAttempts);
+
+				if (response == null) {
+					throw new RuntimeException("Received empty response from NVIDIA NIM Text API.");
+				}
+
+				List<?> choices = (List<?>) response.get("choices");
+				if (choices == null || choices.isEmpty()) {
+					throw new RuntimeException("No choices returned from NVIDIA NIM Text API.");
+				}
+
+				Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+				Map<?, ?> responseMessage = (Map<?, ?>) choice.get("message");
+				String rawContent = (String) responseMessage.get("content");
+				String jsonContent = extractJson(rawContent);
+				log.debug("Sanitized raw content from text model: {}", jsonContent);
+				return objectMapper.readValue(jsonContent, DiagnosisResult.class);
+
+			} catch (Exception ex) {
+				lastException = ex;
+				long callDuration = System.currentTimeMillis() - startTime;
+				log.warn("Nvidia Text NIM call failed on attempt {}/{} after {} ms total: {}", attempt, maxAttempts, callDuration, ex.getMessage());
+				if (attempt < maxAttempts) {
+					try {
+						Thread.sleep(1000);
+					} catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+						throw new RuntimeException("Retry interrupted: " + ie.getMessage(), ie);
+					}
+				}
+			}
+		}
+
+		throw new RuntimeException("Error synthesizing diagnosis via NVIDIA NIM (failed after " + maxAttempts + " attempts): " + lastException.getMessage(), lastException);
+	}
+
+	/**
+	 * Uses DeepSeek V4 Pro for high-quality diagnosis synthesis.
+	 * When DB candidates are provided, uses them as primary reference.
+	 * When no DB match exists, uses DeepSeek's own plant pathology knowledge.
+	 */
+	public DiagnosisResult synthesizeDiagnosisWithDeepSeek(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
+		String deepseekKey = nvidiaProperties.getDeepseekApiKey();
+		if (deepseekKey == null || deepseekKey.isBlank()) {
+			log.warn("DEEPSEEK_API_KEY not set — falling back to NVIDIA text model.");
+			return synthesizeDiagnosis(visionDescription, candidateDiseases);
+		}
+
+		String url = nvidiaProperties.getDeepseekBaseUrl() + "/chat/completions";
+
+		HttpHeaders headers = new HttpHeaders();
+		headers.setContentType(MediaType.APPLICATION_JSON);
+		headers.setBearerAuth(deepseekKey);
+
+		boolean hasDbMatch = !candidateDiseases.isEmpty();
+		boolean hasSymptomPatternMatch = candidateDiseases.stream()
+				.anyMatch(c -> c.matchType() == MatchType.SYMPTOM_PATTERN);
+
+		String dbSection = hasDbMatch
+				? formatCandidateSection(candidateDiseases)
+				: "(No matching records found in the database for this plant/symptoms combination.)";
+
+		String systemPrompt =
+				"You are a world-class plant pathologist and botanist with deep expertise in plant diseases, pests, and treatments.\n" +
+				"Your job is to produce an accurate, actionable plant diagnosis in strict JSON format.\n\n" +
+				"STRICT RULES:\n" +
+				"1. PLANT NAME: Always take the plant name from the Vision Analysis. Never rename or guess a different plant.\n" +
+				"2. PLANT_NAME_MATCH records: Use when both the plant and symptoms align with the Vision Analysis. Base treatment on the DB solution.\n" +
+				"3. SYMPTOM_PATTERN_MATCH records: The DB plant may differ from the photographed plant. If symptoms closely match, you MAY diagnose using that disease name and solution. " +
+				"In confidence_note, explain that symptoms are consistent with this disease pattern seen across many species, but the exact plant type was not confirmed in our database.\n" +
+				"4. NO DB MATCH — USE YOUR KNOWLEDGE: If no record fits, use expert pathology knowledge from the visible symptoms.\n" +
+				"5. HEALTHY PLANT: If the plant shows no disease symptoms, set disease_name to 'Healthy' and is_healthy to true.\n" +
+				"6. OUTPUT: Respond with ONLY a valid raw JSON object. No markdown, no code fences.\n\n" +
+				"Required JSON fields:\n" +
+				"{\n" +
+				"  \"plant_name\": \"exact plant name from vision analysis\",\n" +
+				"  \"disease_name\": \"disease or pest name, or 'Healthy', or 'Unidentified Issue'\",\n" +
+				"  \"symptoms_matched\": \"specific symptoms you identified from the photo description\",\n" +
+				"  \"solution\": \"complete step-by-step actionable treatment plan\",\n" +
+				"  \"confidence_note\": \"High/Medium/Low — brief one-sentence reasoning\",\n" +
+				"  \"is_healthy\": false\n" +
+				"}";
+
+		String matchGuidance = hasDbMatch
+				? (hasSymptomPatternMatch
+						? "Some records are SYMPTOM_PATTERN_MATCH only — prefer them when plant ID is uncertain but symptoms align. State that caveat in confidence_note."
+						: "DB records found — use the best PLANT_NAME_MATCH record as primary treatment basis.")
+				: "No DB records — rely entirely on your expert plant pathology knowledge to diagnose and provide treatment.";
+
+		String userPrompt = String.format(
+				"=== VISION ANALYSIS (what the camera saw) ===\n%s\n\n" +
+				"=== DATABASE RECORDS ===\n%s\n\n" +
+				"%s\n\n" +
+				"Now produce the diagnosis JSON following all rules.",
+				visionDescription,
+				dbSection,
+				matchGuidance
+		);
+
+		Map<String, Object> requestBody = new HashMap<>();
+		requestBody.put("model", nvidiaProperties.getDeepseekModel());
+		requestBody.put("messages", List.of(
+				Map.of("role", "system", "content", systemPrompt),
+				Map.of("role", "user", "content", userPrompt)
+		));
+		requestBody.put("temperature", 1);
+		requestBody.put("top_p", 0.95);
+		requestBody.put("max_tokens", 1024);
+
+		int maxAttempts = 1; // NVIDIA endpoints for large models are heavily queued, fail fast to fallback
+		Exception lastException = null;
+		long startTime = System.currentTimeMillis();
+
+		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+			try {
+				log.info("Calling DeepSeek V4 Pro (attempt {}/{}): {} | DB candidates: {}",
+						attempt, maxAttempts, nvidiaProperties.getDeepseekModel(), candidateDiseases.size());
+				long callStart = System.currentTimeMillis();
+				HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+				Map<?, ?> response = deepSeekRestTemplate.postForObject(url, entity, Map.class);
+				long callDuration = System.currentTimeMillis() - callStart;
+				log.info("DeepSeek call succeeded in {} ms (attempt {}/{})", callDuration, attempt, maxAttempts);
+
+				if (response == null) throw new RuntimeException("Empty response from DeepSeek API.");
+
+				List<?> choices = (List<?>) response.get("choices");
+				if (choices == null || choices.isEmpty()) throw new RuntimeException("No choices in DeepSeek response.");
+
+				Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+				Map<?, ?> msg = (Map<?, ?>) choice.get("message");
+				String rawContent = (String) msg.get("content");
+				log.debug("DeepSeek raw response: {}", rawContent);
+
+				String jsonContent = extractJson(rawContent);
+				return objectMapper.readValue(jsonContent, DiagnosisResult.class);
+
+			} catch (Exception ex) {
+				lastException = ex;
+				long elapsed = System.currentTimeMillis() - startTime;
+				log.warn("DeepSeek call failed on attempt {}/{} after {} ms: {}", attempt, maxAttempts, elapsed, ex.getMessage());
+				if (attempt < maxAttempts) {
+					try { Thread.sleep(1000); } catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+						throw new RuntimeException("Retry interrupted", ie);
+					}
+				}
+			}
+		}
+
+		log.warn("DeepSeek failed after {} attempts — falling back to NVIDIA text model.", maxAttempts);
+		return synthesizeDiagnosis(visionDescription, candidateDiseases);
+	}
+
+	private String formatCandidateSection(List<DiseaseCandidate> candidateDiseases) {
+		return candidateDiseases.stream().map(candidate -> {
+			Disease d = candidate.disease();
+			String matchLabel = candidate.matchType() == MatchType.PLANT_NAME
+					? "PLANT_NAME_MATCH"
+					: "SYMPTOM_PATTERN_MATCH (similar pattern — DB plant may differ from photo)";
+			return String.format(
+					"[%s]\n" +
+					"Plant: %s\n" +
+					"Common Names: %s\n" +
+					"Disease Name: %s\n" +
+					"Description: %s\n" +
+					"Symptoms: %s\n" +
+					"Causes: %s\n" +
+					"Solution: %s\n" +
+					"---",
+					matchLabel,
+					d.getPlant().getName(),
+					d.getPlant().getCommonNames() != null ? d.getPlant().getCommonNames() : "None",
+					d.getDiseaseName(),
+					d.getDescription() != null ? d.getDescription() : "",
+					d.getSymptoms() != null ? d.getSymptoms() : "",
+					d.getCauses() != null ? d.getCauses() : "",
+					d.getSolution() != null ? d.getSolution() : ""
+			);
+		}).collect(Collectors.joining("\n"));
+	}
+
+	private String extractJson(String content) {
+		if (content == null) return "";
+		int firstOpenBrace = content.indexOf('{');
+		int lastCloseBrace = content.lastIndexOf('}');
+		if (firstOpenBrace >= 0 && lastCloseBrace > firstOpenBrace) {
+			return content.substring(firstOpenBrace, lastCloseBrace + 1);
+		}
+		return content.trim();
+	}
+}

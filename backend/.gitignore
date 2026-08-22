@@ -3,6 +3,7 @@ target/
 application-local.yml
 application-local.properties
 .env
+uploads/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
