@@ -66,7 +66,7 @@ public class DiagnosisService {
 
 			List<DiseaseCandidate> candidateDiseases = findCandidateDiseases(symptomsDescription);
 
-			DiagnosisResult diagnosis = nvidiaClientService.synthesizeDiagnosisWithDeepSeek(symptomsDescription,
+			DiagnosisResult diagnosis = nvidiaClientService.synthesizeDiagnosisWithOpenAi(symptomsDescription,
 					candidateDiseases);
 
 			String resultJson = objectMapper.writeValueAsString(diagnosis);

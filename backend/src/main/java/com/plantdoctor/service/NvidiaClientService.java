@@ -18,6 +18,7 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.plantdoctor.config.NvidiaProperties;
+import com.plantdoctor.config.OpenAiProperties;
 import com.plantdoctor.entity.Disease;
 import com.plantdoctor.service.DiseaseCandidate.MatchType;
 
@@ -27,12 +28,17 @@ public class NvidiaClientService {
 	private static final Logger log = LoggerFactory.getLogger(NvidiaClientService.class);
 
 	private final NvidiaProperties nvidiaProperties;
+	private final OpenAiProperties openAiProperties;
 	private final RestTemplate restTemplate;
 	private final RestTemplate deepSeekRestTemplate;
+	private final RestTemplate openAiRestTemplate;
 	private final ObjectMapper objectMapper;
 
-	public NvidiaClientService(NvidiaProperties nvidiaProperties) {
+	private static final String GPT_4O = "gpt-4o";
+
+	public NvidiaClientService(NvidiaProperties nvidiaProperties, OpenAiProperties openAiProperties) {
 		this.nvidiaProperties = nvidiaProperties;
+		this.openAiProperties = openAiProperties;
 		this.objectMapper = new ObjectMapper();
 		
 		// Fast timeout for NVIDIA vision/text models (small models)
@@ -46,6 +52,11 @@ public class NvidiaClientService {
 		deepSeekFactory.setConnectTimeout(30000); // 30 seconds
 		deepSeekFactory.setReadTimeout(90000);    // 90 seconds - reasoning takes time
 		this.deepSeekRestTemplate = new RestTemplate(deepSeekFactory);
+
+		SimpleClientHttpRequestFactory openAiFactory = new SimpleClientHttpRequestFactory();
+		openAiFactory.setConnectTimeout(25000);
+		openAiFactory.setReadTimeout(60000);
+		this.openAiRestTemplate = new RestTemplate(openAiFactory);
 	}
 
 	/**
@@ -251,6 +262,92 @@ public class NvidiaClientService {
 	}
 
 	/**
+	 * Active MVP synthesis (D-7 / D-8): OpenAI gpt-4o with json_schema.
+	 * Falls back to NVIDIA text; never calls DeepSeek.
+	 */
+	public DiagnosisResult synthesizeDiagnosisWithOpenAi(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
+		if (!StringUtils.hasText(openAiProperties.getApiKey())
+				|| "your_openai_api_key_here".equalsIgnoreCase(openAiProperties.getApiKey().trim())) {
+			log.warn("OPENAI_API_KEY not set — falling back to NVIDIA text model.");
+			return synthesizeDiagnosis(visionDescription, candidateDiseases);
+		}
+
+		String baseUrl = openAiProperties.getBaseUrl();
+		if (baseUrl == null || baseUrl.isBlank()) {
+			baseUrl = "https://api.openai.com/v1";
+		}
+		if (baseUrl.endsWith("/")) {
+			baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+		}
+		String url = baseUrl + "/chat/completions";
+
+		HttpHeaders headers = new HttpHeaders();
+		headers.setContentType(MediaType.APPLICATION_JSON);
+		headers.setBearerAuth(openAiProperties.getApiKey());
+
+		String systemPrompt = synthesisSystemPrompt();
+		String userPrompt = synthesisUserPrompt(visionDescription, candidateDiseases);
+
+		Map<String, Object> schema = diagnosisResultJsonSchema();
+		Map<String, Object> jsonSchema = new HashMap<>();
+		jsonSchema.put("name", "diagnosis_result");
+		jsonSchema.put("strict", true);
+		jsonSchema.put("schema", schema);
+
+		Map<String, Object> responseFormat = new HashMap<>();
+		responseFormat.put("type", "json_schema");
+		responseFormat.put("json_schema", jsonSchema);
+
+		Map<String, Object> requestBody = new HashMap<>();
+		requestBody.put("model", GPT_4O);
+		requestBody.put("messages", List.of(
+				Map.of("role", "system", "content", systemPrompt),
+				Map.of("role", "user", "content", userPrompt)
+		));
+		requestBody.put("response_format", responseFormat);
+		requestBody.put("max_tokens", 2048);
+
+		try {
+			log.info("Calling OpenAI synthesis (model {}): DB candidates: {}", GPT_4O, candidateDiseases.size());
+			long callStart = System.currentTimeMillis();
+			HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+			Map<?, ?> response = openAiRestTemplate.postForObject(url, entity, Map.class);
+			long callDuration = System.currentTimeMillis() - callStart;
+			log.info("OpenAI synthesis succeeded in {} ms", callDuration);
+
+			if (response == null) {
+				throw new RuntimeException("Empty response from OpenAI API.");
+			}
+			List<?> choices = (List<?>) response.get("choices");
+			if (choices == null || choices.isEmpty()) {
+				throw new RuntimeException("No choices in OpenAI response.");
+			}
+			Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+			Object finishReason = choice.get("finish_reason");
+			if (finishReason != null) {
+				String reason = finishReason.toString();
+				if ("length".equals(reason) || "content_filter".equals(reason)) {
+					throw new RuntimeException("OpenAI finish_reason=" + reason);
+				}
+			}
+			Map<?, ?> msg = (Map<?, ?>) choice.get("message");
+			if (msg == null) {
+				throw new RuntimeException("No message in OpenAI choice.");
+			}
+			String rawContent = (String) msg.get("content");
+			String jsonContent = extractJson(rawContent);
+			DiagnosisResult parsed = objectMapper.readValue(jsonContent, DiagnosisResult.class);
+			if (!isCompleteDiagnosis(parsed)) {
+				throw new RuntimeException("OpenAI returned incomplete DiagnosisResult.");
+			}
+			return parsed;
+		} catch (Exception ex) {
+			log.warn("OpenAI synthesis failed — falling back to NVIDIA text model: {}", ex.getMessage());
+			return synthesizeDiagnosis(visionDescription, candidateDiseases);
+		}
+	}
+
+	/**
 	 * Uses DeepSeek V4 Pro for high-quality diagnosis synthesis.
 	 * When DB candidates are provided, uses them as primary reference.
 	 * When no DB match exists, uses DeepSeek's own plant pathology knowledge.
@@ -268,50 +365,8 @@ public class NvidiaClientService {
 		headers.setContentType(MediaType.APPLICATION_JSON);
 		headers.setBearerAuth(deepseekKey);
 
-		boolean hasDbMatch = !candidateDiseases.isEmpty();
-		boolean hasSymptomPatternMatch = candidateDiseases.stream()
-				.anyMatch(c -> c.matchType() == MatchType.SYMPTOM_PATTERN);
-
-		String dbSection = hasDbMatch
-				? formatCandidateSection(candidateDiseases)
-				: "(No matching records found in the database for this plant/symptoms combination.)";
-
-		String systemPrompt =
-				"You are a world-class plant pathologist and botanist with deep expertise in plant diseases, pests, and treatments.\n" +
-				"Your job is to produce an accurate, actionable plant diagnosis in strict JSON format.\n\n" +
-				"STRICT RULES:\n" +
-				"1. PLANT NAME: Always take the plant name from the Vision Analysis. Never rename or guess a different plant.\n" +
-				"2. PLANT_NAME_MATCH records: Use when both the plant and symptoms align with the Vision Analysis. Base treatment on the DB solution.\n" +
-				"3. SYMPTOM_PATTERN_MATCH records: The DB plant may differ from the photographed plant. If symptoms closely match, you MAY diagnose using that disease name and solution. " +
-				"In confidence_note, explain that symptoms are consistent with this disease pattern seen across many species, but the exact plant type was not confirmed in our database.\n" +
-				"4. NO DB MATCH — USE YOUR KNOWLEDGE: If no record fits, use expert pathology knowledge from the visible symptoms.\n" +
-				"5. HEALTHY PLANT: If the plant shows no disease symptoms, set disease_name to 'Healthy' and is_healthy to true.\n" +
-				"6. OUTPUT: Respond with ONLY a valid raw JSON object. No markdown, no code fences.\n\n" +
-				"Required JSON fields:\n" +
-				"{\n" +
-				"  \"plant_name\": \"exact plant name from vision analysis\",\n" +
-				"  \"disease_name\": \"disease or pest name, or 'Healthy', or 'Unidentified Issue'\",\n" +
-				"  \"symptoms_matched\": \"specific symptoms you identified from the photo description\",\n" +
-				"  \"solution\": \"complete step-by-step actionable treatment plan\",\n" +
-				"  \"confidence_note\": \"High/Medium/Low — brief one-sentence reasoning\",\n" +
-				"  \"is_healthy\": false\n" +
-				"}";
-
-		String matchGuidance = hasDbMatch
-				? (hasSymptomPatternMatch
-						? "Some records are SYMPTOM_PATTERN_MATCH only — prefer them when plant ID is uncertain but symptoms align. State that caveat in confidence_note."
-						: "DB records found — use the best PLANT_NAME_MATCH record as primary treatment basis.")
-				: "No DB records — rely entirely on your expert plant pathology knowledge to diagnose and provide treatment.";
-
-		String userPrompt = String.format(
-				"=== VISION ANALYSIS (what the camera saw) ===\n%s\n\n" +
-				"=== DATABASE RECORDS ===\n%s\n\n" +
-				"%s\n\n" +
-				"Now produce the diagnosis JSON following all rules.",
-				visionDescription,
-				dbSection,
-				matchGuidance
-		);
+		String systemPrompt = synthesisSystemPrompt();
+		String userPrompt = synthesisUserPrompt(visionDescription, candidateDiseases);
 
 		Map<String, Object> requestBody = new HashMap<>();
 		requestBody.put("model", nvidiaProperties.getDeepseekModel());
@@ -365,6 +420,83 @@ public class NvidiaClientService {
 
 		log.warn("DeepSeek failed after {} attempts — falling back to NVIDIA text model.", maxAttempts);
 		return synthesizeDiagnosis(visionDescription, candidateDiseases);
+	}
+
+	private String synthesisSystemPrompt() {
+		return "You are a world-class plant pathologist and botanist with deep expertise in plant diseases, pests, and treatments.\n" +
+				"Your job is to produce an accurate, actionable plant diagnosis in strict JSON format.\n\n" +
+				"STRICT RULES:\n" +
+				"1. PLANT NAME: Always take the plant name from the Vision Analysis. Never rename or guess a different plant.\n" +
+				"2. PLANT_NAME_MATCH records: Use when both the plant and symptoms align with the Vision Analysis. Base treatment on the DB solution.\n" +
+				"3. SYMPTOM_PATTERN_MATCH records: The DB plant may differ from the photographed plant. If symptoms closely match, you MAY diagnose using that disease name and solution. " +
+				"In confidence_note, explain that symptoms are consistent with this disease pattern seen across many species, but the exact plant type was not confirmed in our database.\n" +
+				"4. NO DB MATCH — USE YOUR KNOWLEDGE: If no record fits, use expert pathology knowledge from the visible symptoms. " +
+				"Set disease_name to 'Unidentified Issue', is_healthy to false, and give generic care advice labeled as not from curated research.\n" +
+				"5. HEALTHY PLANT: If the plant shows no disease symptoms, set disease_name to 'Healthy' and is_healthy to true.\n" +
+				"6. OUTPUT: Respond with ONLY a valid raw JSON object. No markdown, no code fences.\n\n" +
+				"Required JSON fields:\n" +
+				"{\n" +
+				"  \"plant_name\": \"exact plant name from vision analysis\",\n" +
+				"  \"disease_name\": \"disease or pest name, or 'Healthy', or 'Unidentified Issue'\",\n" +
+				"  \"symptoms_matched\": \"specific symptoms you identified from the photo description\",\n" +
+				"  \"solution\": \"complete step-by-step actionable treatment plan\",\n" +
+				"  \"confidence_note\": \"High/Medium/Low — brief one-sentence reasoning\",\n" +
+				"  \"is_healthy\": false\n" +
+				"}";
+	}
+
+	private String synthesisUserPrompt(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
+		boolean hasDbMatch = !candidateDiseases.isEmpty();
+		boolean hasSymptomPatternMatch = candidateDiseases.stream()
+				.anyMatch(c -> c.matchType() == MatchType.SYMPTOM_PATTERN);
+		String dbSection = hasDbMatch
+				? formatCandidateSection(candidateDiseases)
+				: "(No matching records found in the database for this plant/symptoms combination.)";
+		String matchGuidance = hasDbMatch
+				? (hasSymptomPatternMatch
+						? "Some records are SYMPTOM_PATTERN_MATCH only — prefer them when plant ID is uncertain but symptoms align. State that caveat in confidence_note."
+						: "DB records found — use the best PLANT_NAME_MATCH record as primary treatment basis.")
+				: "No DB records — rely entirely on your expert plant pathology knowledge to diagnose and provide treatment.";
+		return String.format(
+				"=== VISION ANALYSIS (what the camera saw) ===\n%s\n\n" +
+				"=== DATABASE RECORDS ===\n%s\n\n" +
+				"%s\n\n" +
+				"Now produce the diagnosis JSON following all rules.",
+				visionDescription,
+				dbSection,
+				matchGuidance
+		);
+	}
+
+	private Map<String, Object> diagnosisResultJsonSchema() {
+		Map<String, Object> stringType = Map.of("type", "string");
+		Map<String, Object> properties = new HashMap<>();
+		properties.put("plant_name", stringType);
+		properties.put("disease_name", stringType);
+		properties.put("symptoms_matched", stringType);
+		properties.put("solution", stringType);
+		properties.put("confidence_note", stringType);
+		properties.put("is_healthy", Map.of("type", "boolean"));
+
+		Map<String, Object> schema = new HashMap<>();
+		schema.put("type", "object");
+		schema.put("properties", properties);
+		schema.put("required", List.of(
+				"plant_name", "disease_name", "symptoms_matched", "solution", "confidence_note", "is_healthy"));
+		schema.put("additionalProperties", false);
+		return schema;
+	}
+
+	private boolean isCompleteDiagnosis(DiagnosisResult parsed) {
+		if (parsed == null) {
+			return false;
+		}
+		return StringUtils.hasText(parsed.plant_name())
+				&& StringUtils.hasText(parsed.disease_name())
+				&& StringUtils.hasText(parsed.symptoms_matched())
+				&& StringUtils.hasText(parsed.solution())
+				&& StringUtils.hasText(parsed.confidence_note())
+				&& parsed.is_healthy() != null;
 	}
 
 	private String formatCandidateSection(List<DiseaseCandidate> candidateDiseases) {

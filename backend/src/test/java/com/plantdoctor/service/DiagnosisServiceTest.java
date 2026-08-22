@@ -54,7 +54,7 @@ public class DiagnosisServiceTest {
 
 		when(nvidiaClientService.analyzeImage(any(), any()))
 				.thenReturn("This plant looks like a money plant with yellowing leaves.");
-		when(nvidiaClientService.synthesizeDiagnosisWithDeepSeek(anyString(), anyList()))
+		when(nvidiaClientService.synthesizeDiagnosisWithOpenAi(anyString(), anyList()))
 				.thenReturn(new DiagnosisResult("Money Plant", "Root Rot", "Yellowing leaves", "Reduce water", "High",
 						false));
 
@@ -65,6 +65,8 @@ public class DiagnosisServiceTest {
 		assertEquals("Root Rot", result.disease_name());
 		verify(diseaseRepository).findAllWithPlant();
 		verify(queryRepository).save(any());
+		verify(nvidiaClientService).synthesizeDiagnosisWithOpenAi(anyString(), anyList());
+		verify(nvidiaClientService, never()).synthesizeDiagnosisWithDeepSeek(anyString(), anyList());
 	}
 
 	@Test
