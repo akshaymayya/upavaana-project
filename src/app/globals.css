@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffcc84;
+  --foreground: #464b44;
+  --mozaara-gold: #ffcc84;
+  --mozaara-gold-light: #ffcd84;
+  --mozaara-text: #464b44;
+  --mozaara-text-alt: #464b45;
+  --mozaara-dark: #4d5046;
+  --mozaara-pink: #ffdcdc;
+  --mozaara-cream: #ffecec;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-mozaara-gold: var(--mozaara-gold);
+  --color-mozaara-gold-light: var(--mozaara-gold-light);
+  --color-mozaara-text: var(--mozaara-text);
+  --color-mozaara-text-alt: var(--mozaara-text-alt);
+  --color-mozaara-dark: var(--mozaara-dark);
+  --color-mozaara-pink: var(--mozaara-pink);
+  --color-mozaara-cream: var(--mozaara-cream);
+  --font-sans: var(--font-outfit);
+  --font-script: var(--font-luxurious-script);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-outfit), system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+.font-script {
+  font-family: var(--font-luxurious-script), cursive;
+}
