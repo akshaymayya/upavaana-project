@@ -25,11 +25,12 @@ interface Props {
 export default function ResultsScreen({ route, navigation }: Props) {
   const { diagnosis } = route.params;
 
+  const disease = diagnosis.disease_name?.toLowerCase() ?? '';
   const isHealthy =
     diagnosis.is_healthy === true ||
-    diagnosis.disease_name.toLowerCase().includes('healthy') ||
-    diagnosis.disease_name.toLowerCase().includes('no issues') ||
-    diagnosis.disease_name.toLowerCase().includes('no disease');
+    disease.includes('healthy') ||
+    disease.includes('no issues') ||
+    disease.includes('no disease');
 
   const handleReset = () => {
     navigation.popToTop();

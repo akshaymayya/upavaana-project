@@ -7,11 +7,13 @@ import {
   SafeAreaView,
   StatusBar,
   Image,
+  ScrollView,
 } from 'react-native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import * as ImagePicker from 'expo-image-picker';
 import { colors } from '../theme/colors';
+import { sessionCardTitle, useDiagnosisSession } from '../context/DiagnosisSessionContext';
 
 type HomeScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Home'>;
 
@@ -20,6 +22,8 @@ interface Props {
 }
 
 export default function HomeScreen({ navigation }: Props) {
+  const { entries } = useDiagnosisSession();
+
   const pickImage = async () => {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permissionResult.granted) {
@@ -29,7 +33,7 @@ export default function HomeScreen({ navigation }: Props) {
 
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         quality: 0.8,
       });
@@ -68,7 +72,7 @@ export default function HomeScreen({ navigation }: Props) {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={colors.background} />
-      <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.headerContainer}>
           <Image
             source={require('../../assets/upavana/logo-color.png')}
@@ -79,15 +83,17 @@ export default function HomeScreen({ navigation }: Props) {
           <Text style={styles.brandSubtitle}>Plant Health Diagnosis</Text>
         </View>
 
-        <View style={styles.illustrationCard}>
-          <View style={styles.illustrationCircle}>
-            <Text style={styles.illustrationEmoji}>🌿</Text>
+        {entries.length === 0 ? (
+          <View style={styles.illustrationCard}>
+            <View style={styles.illustrationCircle}>
+              <Text style={styles.illustrationEmoji}>🌿</Text>
+            </View>
+            <Text style={styles.illustrationText}>
+              Keep your plants healthy and thriving. Take a clear photo of the affected leaves to
+              diagnose the issue in seconds.
+            </Text>
           </View>
-          <Text style={styles.illustrationText}>
-            Keep your plants healthy and thriving. Take a clear photo of the affected leaves to
-            diagnose the issue in seconds.
-          </Text>
-        </View>
+        ) : null}
 
         <View style={styles.actionsContainer}>
           <TouchableOpacity style={styles.primaryButton} onPress={takePhoto} activeOpacity={0.85}>
@@ -99,10 +105,42 @@ export default function HomeScreen({ navigation }: Props) {
           </TouchableOpacity>
         </View>
 
+        {entries.length > 0 ? (
+          <View style={styles.historySection}>
+            <Text style={styles.historyHeading}>This session</Text>
+            <Text style={styles.historyHint}>
+              This list is only in memory. It is empty after a full app restart.
+            </Text>
+            {entries.map((entry) => (
+              <TouchableOpacity
+                key={entry.id}
+                style={styles.historyCard}
+                activeOpacity={0.85}
+                onPress={() =>
+                  navigation.navigate('Results', {
+                    diagnosis: entry.diagnosis,
+                    sessionId: entry.id,
+                  })
+                }
+                accessibilityRole="button"
+                accessibilityLabel={sessionCardTitle(entry.diagnosis)}
+              >
+                <Image source={{ uri: entry.imageUri }} style={styles.historyThumb} />
+                <View style={styles.historyCopy}>
+                  <Text style={styles.historyTitle} numberOfLines={2}>
+                    {sessionCardTitle(entry.diagnosis)}
+                  </Text>
+                  <Text style={styles.historyDate}>{new Date(entry.createdAt).toLocaleString()}</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : null}
+
         <View style={styles.footerContainer}>
           <Text style={styles.footerText}>Nature&apos;s Embrace</Text>
         </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -112,15 +150,14 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  container: {
-    flex: 1,
+  scrollContent: {
     paddingHorizontal: 24,
-    justifyContent: 'space-between',
     paddingVertical: 32,
+    gap: 20,
   },
   headerContainer: {
     alignItems: 'center',
-    marginTop: 24,
+    marginTop: 8,
   },
   logo: {
     width: 280,
@@ -143,7 +180,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 16,
     elevation: 2,
-    marginVertical: 40,
     borderWidth: 1,
     borderColor: colors.borderLight,
   },
@@ -201,9 +237,56 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
+  historySection: {
+    gap: 12,
+  },
+  historyHeading: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: colors.textPrimary,
+  },
+  historyHint: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginBottom: 4,
+  },
+  historyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 12,
+    elevation: 1.5,
+  },
+  historyThumb: {
+    width: 64,
+    height: 64,
+    borderRadius: 12,
+    backgroundColor: colors.secondaryLight,
+  },
+  historyCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  historyTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: colors.textPrimary,
+  },
+  historyDate: {
+    fontSize: 12,
+    color: colors.textMuted,
+  },
   footerContainer: {
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 8,
   },
   footerText: {
     fontSize: 11,

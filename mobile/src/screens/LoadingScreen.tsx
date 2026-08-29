@@ -5,6 +5,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import Constants from 'expo-constants';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { colors } from '../theme/colors';
+import { useDiagnosisSession } from '../context/DiagnosisSessionContext';
 
 type LoadingScreenRouteProp = RouteProp<RootStackParamList, 'Loading'>;
 
@@ -25,15 +26,30 @@ const PLANT_TIPS = [
 ];
 
 const getApiUrl = () => {
-  const hostUri = Constants.expoConfig?.hostUri;
-  const ip = hostUri ? hostUri.split(':')[0] : 'localhost';
-  return `http://${ip}:8080/api/diagnose`;
+  const raw =
+    Constants.expoConfig?.hostUri ??
+    (Constants as { debuggerHost?: string }).debuggerHost ??
+    '';
+  const stripped = raw.replace(/^exp:\/\//, '').replace(/^https?:\/\//, '').split('/')[0];
+  let host = 'localhost';
+  if (stripped.startsWith('[')) {
+    const end = stripped.indexOf(']');
+    if (end > 1) {
+      host = stripped.slice(1, end);
+    }
+  } else if (stripped) {
+    host = stripped.split(':')[0];
+  }
+  const url = `http://${host}:8080/api/diagnose`;
+  console.log('Diagnosis API URL:', url);
+  return url;
 };
 
 const API_URL = getApiUrl();
 
 export default function LoadingScreen({ route, navigation }: Props) {
   const { imageUri } = route.params;
+  const { addDiagnosis } = useDiagnosisSession();
   const [tipIndex, setTipIndex] = useState(0);
   const [statusMessage, setStatusMessage] = useState('Uploading image...');
 
@@ -71,12 +87,13 @@ export default function LoadingScreen({ route, navigation }: Props) {
       try {
         const formData = new FormData();
         const uriParts = imageUri.split('.');
-        const fileType = uriParts[uriParts.length - 1];
+        const ext = (uriParts[uriParts.length - 1] || 'jpg').split('?')[0].toLowerCase();
+        const safeExt = ext === 'png' || ext === 'webp' || ext === 'heic' ? ext : 'jpg';
 
         formData.append('image', {
           uri: imageUri,
-          name: `photo.${fileType}`,
-          type: `image/${fileType === 'png' ? 'png' : 'jpeg'}`,
+          name: `photo.${safeExt}`,
+          type: safeExt === 'png' ? 'image/png' : 'image/jpeg',
         } as any);
 
         const response = await fetch(API_URL, {
@@ -84,7 +101,6 @@ export default function LoadingScreen({ route, navigation }: Props) {
           body: formData,
           headers: {
             Accept: 'application/json',
-            'Content-Type': 'multipart/form-data',
           },
           signal: controller.signal,
         });
@@ -94,7 +110,13 @@ export default function LoadingScreen({ route, navigation }: Props) {
 
         if (response.ok) {
           const data = await response.json();
-          navigation.replace('Results', { diagnosis: data });
+          if (!active) return;
+          if (typeof data?.plant_name !== 'string' || typeof data?.disease_name !== 'string') {
+            navigation.replace('Error', { message: 'The server returned an incomplete diagnosis.' });
+            return;
+          }
+          const sessionId = addDiagnosis({ imageUri, diagnosis: data, createdAt: Date.now() });
+          navigation.replace('Results', { diagnosis: data, sessionId });
         } else {
           let errorText = 'Server returned an error';
           try {
@@ -132,7 +154,7 @@ export default function LoadingScreen({ route, navigation }: Props) {
       controller.abort();
       clearTimeout(timeoutId);
     };
-  }, [imageUri, navigation]);
+  }, [imageUri, navigation, addDiagnosis]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
