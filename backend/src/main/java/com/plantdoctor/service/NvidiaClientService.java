@@ -13,10 +13,12 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.plantdoctor.config.GroqProperties;
 import com.plantdoctor.config.NvidiaProperties;
 import com.plantdoctor.config.OpenAiProperties;
 import com.plantdoctor.entity.Disease;
@@ -29,6 +31,7 @@ public class NvidiaClientService {
 
 	private final NvidiaProperties nvidiaProperties;
 	private final OpenAiProperties openAiProperties;
+	private final GroqProperties groqProperties;
 	private final RestTemplate restTemplate;
 	private final RestTemplate deepSeekRestTemplate;
 	private final RestTemplate openAiRestTemplate;
@@ -36,21 +39,23 @@ public class NvidiaClientService {
 
 	private static final String GPT_4O = "gpt-4o";
 
-	public NvidiaClientService(NvidiaProperties nvidiaProperties, OpenAiProperties openAiProperties) {
+	public NvidiaClientService(NvidiaProperties nvidiaProperties, OpenAiProperties openAiProperties,
+			GroqProperties groqProperties) {
 		this.nvidiaProperties = nvidiaProperties;
 		this.openAiProperties = openAiProperties;
+		this.groqProperties = groqProperties;
 		this.objectMapper = new ObjectMapper();
 		
-		// Fast timeout for NVIDIA vision/text models (small models)
+		// NVIDIA vision can exceed 25s when the hosted NIM is queued (2026-08-27: dual 25s timeouts, ~52s fail, DeepSeek never ran).
 		SimpleClientHttpRequestFactory fastFactory = new SimpleClientHttpRequestFactory();
-		fastFactory.setConnectTimeout(25000); // 25 seconds
-		fastFactory.setReadTimeout(25000);    // 25 seconds
+		fastFactory.setConnectTimeout(25000);
+		fastFactory.setReadTimeout(60000);
 		this.restTemplate = new RestTemplate(fastFactory);
 
-		// Longer timeout for DeepSeek V4 Pro (large reasoning model)
+		// Fail NIM DeepSeek quickly so Groq/text fallback can run; 90s stalls the mobile client.
 		SimpleClientHttpRequestFactory deepSeekFactory = new SimpleClientHttpRequestFactory();
-		deepSeekFactory.setConnectTimeout(30000); // 30 seconds
-		deepSeekFactory.setReadTimeout(90000);    // 90 seconds - reasoning takes time
+		deepSeekFactory.setConnectTimeout(15000);
+		deepSeekFactory.setReadTimeout(25000);
 		this.deepSeekRestTemplate = new RestTemplate(deepSeekFactory);
 
 		SimpleClientHttpRequestFactory openAiFactory = new SimpleClientHttpRequestFactory();
@@ -85,9 +90,11 @@ public class NvidiaClientService {
 						"- Texture (thick/succulent, thin, leathery, fuzzy)\n" +
 						"- Venation pattern if visible\n" +
 						"- Growth habit clues (woody shrub/tree branch, herbaceous stem, vine, succulent rosette)\n\n" +
-						"Then give your best plant identification. If uncertain, say so honestly — e.g. " +
-						"\"possibly X, or a similar woody ornamental with these leaf characteristics\" — " +
-						"rather than confidently guessing a poor match like lettuce for a woody shrub leaf.\n\n" +
+						"Then give your best plant identification. Do not default a single palmate/lobed ornamental leaf to rose. " +
+						"Broad palmate leaves with 3–5 lobes and a toothed margin are often hibiscus (or similar mallow); rose leaflets are usually smaller and pinnately compound. " +
+						"If uncertain, say so honestly — e.g. " +
+						"\"possibly hibiscus or another woody ornamental with palmate leaves\" — " +
+						"rather than confidently guessing a poor match like lettuce or rose for the wrong leaf type.\n\n" +
 						"Finally list all visible symptoms in detail (color, pattern, location on leaf): " +
 						"spots, lesions, halos, yellowing, wilting, mold, pests, etc.\n\n" +
 						"Write a single cohesive paragraph covering morphology, plant guess (with uncertainty if needed), and symptoms."
@@ -106,7 +113,7 @@ public class NvidiaClientService {
 		Map<String, Object> requestBody = Map.of(
 				"model", nvidiaProperties.getVisionModel(),
 				"messages", List.of(message),
-				"max_tokens", 1024
+				"max_tokens", 512
 		);
 
 		int maxAttempts = 2;
@@ -211,7 +218,7 @@ public class NvidiaClientService {
 		Map<String, Object> requestBody = Map.of(
 				"model", nvidiaProperties.getTextModel(),
 				"messages", List.of(systemMessage, userMessage),
-				"max_tokens", 800
+				"max_tokens", 2048
 		);
 
 		int maxAttempts = 2;
@@ -262,8 +269,8 @@ public class NvidiaClientService {
 	}
 
 	/**
-	 * Active MVP synthesis (D-7 / D-8): OpenAI gpt-4o with json_schema.
-	 * Falls back to NVIDIA text; never calls DeepSeek.
+	 * Target D-7/D-8 synthesis: OpenAI gpt-4o with json_schema.
+	 * Used when ACTIVE_SYNTHESIS_PROVIDER=openai. Falls back to NVIDIA text; never calls DeepSeek.
 	 */
 	public DiagnosisResult synthesizeDiagnosisWithOpenAi(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
 		if (!StringUtils.hasText(openAiProperties.getApiKey())
@@ -348,78 +355,176 @@ public class NvidiaClientService {
 	}
 
 	/**
-	 * Uses DeepSeek V4 Pro for high-quality diagnosis synthesis.
-	 * When DB candidates are provided, uses them as primary reference.
-	 * When no DB match exists, uses DeepSeek's own plant pathology knowledge.
+	 * Groq OpenAI-compatible synthesis. Used when ACTIVE_SYNTHESIS_PROVIDER=groq.
 	 */
-	public DiagnosisResult synthesizeDiagnosisWithDeepSeek(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
-		String deepseekKey = nvidiaProperties.getDeepseekApiKey();
-		if (deepseekKey == null || deepseekKey.isBlank()) {
-			log.warn("DEEPSEEK_API_KEY not set — falling back to NVIDIA text model.");
+	public DiagnosisResult synthesizeDiagnosisWithGroq(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
+		String apiKey = groqProperties.getApiKey() == null ? "" : groqProperties.getApiKey().trim();
+		if (!StringUtils.hasText(apiKey)
+				|| "your_groq_api_key_here".equalsIgnoreCase(apiKey)) {
+			log.warn("GROQ_API_KEY not set — falling back to NVIDIA text model.");
 			return synthesizeDiagnosis(visionDescription, candidateDiseases);
 		}
 
-		String url = nvidiaProperties.getDeepseekBaseUrl() + "/chat/completions";
+		String baseUrl = groqProperties.getBaseUrl();
+		if (baseUrl == null || baseUrl.isBlank()) {
+			baseUrl = "https://api.groq.com/openai/v1";
+		}
+		baseUrl = baseUrl.trim();
+		while (baseUrl.endsWith("/")) {
+			baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+		}
+		String url = baseUrl + "/chat/completions";
+		String configuredModel = groqProperties.getModel();
+		String model = StringUtils.hasText(configuredModel)
+				? configuredModel.trim()
+				: "openai/gpt-oss-120b";
 
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
-		headers.setBearerAuth(deepseekKey);
+		headers.setBearerAuth(apiKey);
 
 		String systemPrompt = synthesisSystemPrompt();
 		String userPrompt = synthesisUserPrompt(visionDescription, candidateDiseases);
 
 		Map<String, Object> requestBody = new HashMap<>();
-		requestBody.put("model", nvidiaProperties.getDeepseekModel());
+		requestBody.put("model", model);
 		requestBody.put("messages", List.of(
 				Map.of("role", "system", "content", systemPrompt),
 				Map.of("role", "user", "content", userPrompt)
 		));
-		requestBody.put("temperature", 1);
-		requestBody.put("top_p", 0.95);
-		requestBody.put("max_tokens", 1024);
+		requestBody.put("temperature", 0.2);
+		requestBody.put("max_tokens", 2048);
+		requestBody.put("response_format", Map.of("type", "json_object"));
 
-		int maxAttempts = 1; // NVIDIA endpoints for large models are heavily queued, fail fast to fallback
+		int maxAttempts = 2;
 		Exception lastException = null;
-		long startTime = System.currentTimeMillis();
-
 		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
-				log.info("Calling DeepSeek V4 Pro (attempt {}/{}): {} | DB candidates: {}",
-						attempt, maxAttempts, nvidiaProperties.getDeepseekModel(), candidateDiseases.size());
+				log.info("Calling Groq synthesis (attempt {}/{}): {} | DB candidates: {}",
+						attempt, maxAttempts, model, candidateDiseases.size());
 				long callStart = System.currentTimeMillis();
 				HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-				Map<?, ?> response = deepSeekRestTemplate.postForObject(url, entity, Map.class);
+				Map<?, ?> response = openAiRestTemplate.postForObject(url, entity, Map.class);
 				long callDuration = System.currentTimeMillis() - callStart;
-				log.info("DeepSeek call succeeded in {} ms (attempt {}/{})", callDuration, attempt, maxAttempts);
+				log.info("Groq HTTP {}ms model={} usage {}", callDuration, model, formatUsage(response));
 
-				if (response == null) throw new RuntimeException("Empty response from DeepSeek API.");
-
+				if (response == null) {
+					throw new RuntimeException("Empty response from Groq API.");
+				}
 				List<?> choices = (List<?>) response.get("choices");
-				if (choices == null || choices.isEmpty()) throw new RuntimeException("No choices in DeepSeek response.");
-
+				if (choices == null || choices.isEmpty()) {
+					throw new RuntimeException("No choices in Groq response.");
+				}
 				Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+				rejectTruncatedChoice(choice, "Groq");
 				Map<?, ?> msg = (Map<?, ?>) choice.get("message");
-				String rawContent = (String) msg.get("content");
-				log.debug("DeepSeek raw response: {}", rawContent);
-
+				String rawContent = openAiStyleMessageText(msg);
 				String jsonContent = extractJson(rawContent);
-				return objectMapper.readValue(jsonContent, DiagnosisResult.class);
-
+				DiagnosisResult parsed = objectMapper.readValue(jsonContent, DiagnosisResult.class);
+				if (!isCompleteDiagnosis(parsed)) {
+					throw new RuntimeException("Groq returned incomplete DiagnosisResult.");
+				}
+				return parsed;
 			} catch (Exception ex) {
 				lastException = ex;
-				long elapsed = System.currentTimeMillis() - startTime;
-				log.warn("DeepSeek call failed on attempt {}/{} after {} ms: {}", attempt, maxAttempts, elapsed, ex.getMessage());
-				if (attempt < maxAttempts) {
-					try { Thread.sleep(1000); } catch (InterruptedException ie) {
-						Thread.currentThread().interrupt();
-						throw new RuntimeException("Retry interrupted", ie);
-					}
+				log.warn("Groq call failed on attempt {}/{}: {}", attempt, maxAttempts, ex.getMessage());
+				boolean jsonFormatRejected = ex instanceof HttpStatusCodeException httpEx
+						&& httpEx.getStatusCode().value() == 400
+						&& requestBody.containsKey("response_format");
+				if (attempt < maxAttempts && jsonFormatRejected) {
+					requestBody.remove("response_format");
+					continue;
 				}
+				break;
 			}
 		}
-
-		log.warn("DeepSeek failed after {} attempts — falling back to NVIDIA text model.", maxAttempts);
+		log.warn("Groq synthesis failed — falling back to NVIDIA text model: {}",
+				lastException != null ? lastException.getMessage() : "unknown");
 		return synthesizeDiagnosis(visionDescription, candidateDiseases);
+	}
+
+	/**
+	 * NVIDIA NIM DeepSeek synthesis. Used when ACTIVE_SYNTHESIS_PROVIDER=deepseek.
+	 * Does not call api.deepseek.com or OpenRouter.
+	 */
+	public DiagnosisResult synthesizeDiagnosisWithDeepSeek(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
+		String systemPrompt = synthesisSystemPrompt();
+		String userPrompt = synthesisUserPrompt(visionDescription, candidateDiseases);
+		int promptChars = systemPrompt.length() + userPrompt.length();
+		DiagnosisResult nvidiaHosted = synthesizeDiagnosisWithNvidiaHostedDeepSeek(
+				systemPrompt, userPrompt, promptChars, candidateDiseases.size());
+		if (nvidiaHosted != null) {
+			return nvidiaHosted;
+		}
+		log.warn("NVIDIA-hosted DeepSeek failed — falling back to NVIDIA text model.");
+		return synthesizeDiagnosis(visionDescription, candidateDiseases);
+	}
+
+	/**
+	 * Same DeepSeek family via NVIDIA NIM (NVIDIA_API_KEY). Primary path for provider=deepseek.
+	 */
+	private DiagnosisResult synthesizeDiagnosisWithNvidiaHostedDeepSeek(
+			String systemPrompt, String userPrompt, int promptChars, int candidateCount) {
+		if (!StringUtils.hasText(nvidiaProperties.getApiKey())) {
+			log.warn("NVIDIA_API_KEY not set — cannot call NVIDIA-hosted DeepSeek.");
+			return null;
+		}
+		String nimModel = nvidiaProperties.getDeepseekNimModel();
+		if (!StringUtils.hasText(nimModel)) {
+			nimModel = "deepseek-ai/deepseek-v4-pro-0813";
+		}
+		String base = nvidiaProperties.getBaseUrl();
+		if (!StringUtils.hasText(base)) {
+			base = "https://integrate.api.nvidia.com/v1";
+		}
+		base = base.trim();
+		while (base.endsWith("/")) {
+			base = base.substring(0, base.length() - 1);
+		}
+		String url = base + "/chat/completions";
+		HttpHeaders headers = new HttpHeaders();
+		headers.setContentType(MediaType.APPLICATION_JSON);
+		headers.setBearerAuth(nvidiaProperties.getApiKey());
+
+		Map<String, Object> requestBody = new HashMap<>();
+		requestBody.put("model", nimModel);
+		requestBody.put("messages", List.of(
+				Map.of("role", "system", "content", systemPrompt),
+				Map.of("role", "user", "content", userPrompt)
+		));
+		requestBody.put("max_tokens", 2048);
+		requestBody.put("temperature", 0.3);
+
+		try {
+			log.info("Calling NVIDIA-hosted DeepSeek {}: promptChars={} candidates={}",
+					nimModel, promptChars, candidateCount);
+			long callStart = System.currentTimeMillis();
+			HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+			Map<?, ?> response = deepSeekRestTemplate.postForObject(url, entity, Map.class);
+			long callDuration = System.currentTimeMillis() - callStart;
+			log.info("NVIDIA-hosted DeepSeek HTTP {}ms promptChars={} candidates={} usage {}",
+					callDuration, promptChars, candidateCount, formatUsage(response));
+			if (response == null) {
+				throw new RuntimeException("Empty response from NVIDIA-hosted DeepSeek.");
+			}
+			List<?> choices = (List<?>) response.get("choices");
+			if (choices == null || choices.isEmpty()) {
+				throw new RuntimeException("No choices from NVIDIA-hosted DeepSeek.");
+			}
+			Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+			rejectTruncatedChoice(choice, "NVIDIA-hosted DeepSeek");
+			Map<?, ?> msg = (Map<?, ?>) choice.get("message");
+			String rawContent = openAiStyleMessageText(msg);
+			String jsonContent = extractJson(rawContent);
+			DiagnosisResult parsed = objectMapper.readValue(jsonContent, DiagnosisResult.class);
+			if (!isCompleteDiagnosis(parsed)) {
+				throw new RuntimeException("NVIDIA-hosted DeepSeek returned incomplete DiagnosisResult.");
+			}
+			return parsed;
+		} catch (Exception ex) {
+			log.warn("NVIDIA-hosted DeepSeek failed: {}", ex.getMessage());
+			return null;
+		}
 	}
 
 	private String synthesisSystemPrompt() {
@@ -433,7 +538,11 @@ public class NvidiaClientService {
 				"4. NO DB MATCH — USE YOUR KNOWLEDGE: If no record fits, use expert pathology knowledge from the visible symptoms. " +
 				"Set disease_name to 'Unidentified Issue', is_healthy to false, and give generic care advice labeled as not from curated research.\n" +
 				"5. HEALTHY PLANT: If the plant shows no disease symptoms, set disease_name to 'Healthy' and is_healthy to true.\n" +
-				"6. OUTPUT: Respond with ONLY a valid raw JSON object. No markdown, no code fences.\n\n" +
+				"6. OUTPUT: Respond with ONLY a valid raw JSON object. No markdown, no code fences.\n" +
+				"7. SPECIFIC AND SHORT: disease_name must be a concrete disease or pest when symptoms allow (e.g. powdery mildew), not vague 'fungal infection'. " +
+				"solution must be 4 to 6 short numbered steps (isolate, prune, water change, named treatment type). No essays.\n" +
+				"8. COMMIT TO ONE ANSWER: Pick a single most-likely disease and one treatment plan. Do not hedge 50-50. " +
+				"If a second cause is possible, mention it in one clause of confidence_note only.\n\n" +
 				"Required JSON fields:\n" +
 				"{\n" +
 				"  \"plant_name\": \"exact plant name from vision analysis\",\n" +
@@ -454,7 +563,7 @@ public class NvidiaClientService {
 				: "(No matching records found in the database for this plant/symptoms combination.)";
 		String matchGuidance = hasDbMatch
 				? (hasSymptomPatternMatch
-						? "Some records are SYMPTOM_PATTERN_MATCH only — prefer them when plant ID is uncertain but symptoms align. State that caveat in confidence_note."
+						? "Some records are SYMPTOM_PATTERN_MATCH only. Pick the SINGLE best disease for the vision symptoms. Put that name in disease_name and its treatment in solution. Do not split the answer across two diseases."
 						: "DB records found — use the best PLANT_NAME_MATCH record as primary treatment basis.")
 				: "No DB records — rely entirely on your expert plant pathology knowledge to diagnose and provide treatment.";
 		return String.format(
@@ -525,6 +634,52 @@ public class NvidiaClientService {
 					d.getSolution() != null ? d.getSolution() : ""
 			);
 		}).collect(Collectors.joining("\n"));
+	}
+
+	private void rejectTruncatedChoice(Map<?, ?> choice, String source) {
+		if (choice == null) {
+			return;
+		}
+		Object finishReason = choice.get("finish_reason");
+		if (finishReason == null) {
+			return;
+		}
+		String reason = finishReason.toString();
+		if ("length".equals(reason) || "content_filter".equals(reason)) {
+			throw new RuntimeException(source + " finish_reason=" + reason);
+		}
+	}
+
+	private String formatUsage(Map<?, ?> response) {
+		if (response == null || response.get("usage") == null) {
+			return "n/a";
+		}
+		Object usage = response.get("usage");
+		if (!(usage instanceof Map<?, ?> usageMap)) {
+			return String.valueOf(usage);
+		}
+		Object prompt = usageMap.get("prompt_tokens");
+		Object completion = usageMap.get("completion_tokens");
+		Object reasoning = usageMap.get("reasoning_tokens");
+		if (reasoning == null && usageMap.get("completion_tokens_details") instanceof Map<?, ?> details) {
+			reasoning = details.get("reasoning_tokens");
+		}
+		return "prompt=" + prompt + " completion=" + completion + " reasoning=" + reasoning;
+	}
+
+	private String openAiStyleMessageText(Map<?, ?> msg) {
+		if (msg == null) {
+			return "";
+		}
+		Object content = msg.get("content");
+		if (content instanceof String text && StringUtils.hasText(text)) {
+			return text;
+		}
+		Object reasoning = msg.get("reasoning");
+		if (reasoning instanceof String reasoningText && StringUtils.hasText(reasoningText)) {
+			return reasoningText;
+		}
+		return content instanceof String text ? text : "";
 	}
 
 	private String extractJson(String content) {

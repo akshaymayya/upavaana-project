@@ -698,6 +698,15 @@ See §6. Each deferred item should name **why** (simplicity) and **what stays op
 | **OQ-4** | Disclaimer copy per FR-18 | 2026-08-08 | `[ACTIVE]` |
 | **OQ-7** | `gpt-4o` vs `gpt-4o-mini` | 2026-08-11 | `[ACTIVE]` Resolved → D-8 (`gpt-4o`) |
 
+#### 9.3.3 Runtime default DeepSeek (2026-08-27) — **not a D-7/D-8 reversal**
+
+| | |
+|---|---|
+| **Changed** | Live `diagnosePlant()` default provider is **DeepSeek** via `ACTIVE_SYNTHESIS_PROVIDER` (default `deepseek`) |
+| **Why** | OpenAI prepaid billing blocked; stakeholder previously allowed DeepSeek for MVP |
+| **Unchanged** | D-7/D-8 remain the **target** stack (`gpt-4o` + json_schema). OpenAI methods stay in the repo. Flip env to `openai` when billing is approved. NVIDIA text remains fallback. |
+| **Also** | NVIDIA text model default → `openai/gpt-oss-20b` (`meta/llama-3.1-8b-instruct` EOL 2026-08-26) |
+
 #### 9.3.1 D-7 change log (2026-08-08)
 
 | | |

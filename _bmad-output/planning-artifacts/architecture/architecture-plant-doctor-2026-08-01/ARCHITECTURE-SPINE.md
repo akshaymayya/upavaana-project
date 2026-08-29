@@ -130,14 +130,15 @@ flowchart LR
 ### AD-6 — AI provider chain
 
 - **Binds:** FR-5, FR-7, DAC-6, D-1, D-7, D-8
-- **Prevents:** Ad-hoc model swaps; DeepSeek on the live path; unbounded retries vs mobile 180s budget
+- **Prevents:** Ad-hoc model swaps without config; unbounded retries vs mobile 180s budget
 - **Rule — Vision (required):** NVIDIA NIM only. Model `meta/llama-3.2-11b-vision-instruct`. `NVIDIA_API_KEY` required — missing key is a **clear server error**, not silent fail. 25s timeout, max 2 attempts. Prompt: leaf morphology, growth habit, honest uncertainty, detailed symptoms. **Not** OpenAI vision. **Not** Claude.
-- **Rule — Synthesis primary:** OpenAI Chat Completions. Model **`gpt-4o` only** (D-8). `response_format: json_schema` matching `DiagnosisResult`. `OPENAI_API_KEY` required for demo happy path. Target read timeout ≤ 60s.
-- **Rule — Synthesis fallback:** On OpenAI failure or missing key → NVIDIA NIM text `meta/llama-3.1-8b-instruct`, 25s, max 2 attempts. This path **must be E2E tested** before stakeholder demo (DAC-6 / SM-9) — same acceptance as primary.
-- **Rule — DeepSeek:** `synthesizeDiagnosisWithDeepSeek` / `DEEPSEEK_*` **must not** be invoked on `diagnosePlant()` for MVP. Code may remain unused. `DEEPSEEK_API_KEY` not required.
+- **Rule — Synthesis target (D-7 / D-8):** OpenAI Chat Completions **`gpt-4o`** + `json_schema` matching `DiagnosisResult`. Intended happy path when billing is approved. Switch via `ACTIVE_SYNTHESIS_PROVIDER=openai` (restart). This AD does **not** reverse D-7/D-8.
+- **Rule — Synthesis runtime (2026-08-27, temporary):** Default `ACTIVE_SYNTHESIS_PROVIDER=deepseek` because OpenAI prepaid billing is blocked. `diagnosePlant()` calls `synthesizeDiagnosisWithDeepSeek`. OpenAI methods stay in the repo. Flip env to `openai` when stakeholder approves billing — no code change.
+- **Rule — Synthesis fallback:** On primary failure or missing key → NVIDIA NIM text **`openai/gpt-oss-20b`** (hosted; `meta/llama-3.1-8b-instruct` EOL 2026-08-26 / 410 Gone), 25s, max 2 attempts. DAC-6 still required before stakeholder demo.
+- **Rule — DeepSeek:** Required for current MVP runtime default. Code path already existed; now selected by config. `DEEPSEEK_API_KEY` required when provider is `deepseek`.
 - **Rule — gpt-4o-mini:** Not used for MVP diagnosis. Reserved for post-MVP high-frequency chat.
 - **Budget:** Whole pipeline ≤ mobile **180s** abort.
-- **Code gap:** Live `diagnosePlant()` still calls DeepSeek. Target stack is OpenAI. Follow-up story: wire OpenAI, stop calling DeepSeek. [ADOPTED — revised 2026-08-14]
+- **Note:** Reversible config default, not a reversal of D-7/D-8. [ADOPTED — runtime default DeepSeek 2026-08-27]
 
 ### AD-7 — Synthesis output + confidence tiers
 
@@ -222,9 +223,9 @@ flowchart LR
 | TypeScript | ~5.9.2 |
 | React Navigation | ^7.x |
 | NVIDIA NIM (vision) | meta/llama-3.2-11b-vision-instruct |
-| NVIDIA NIM (text fallback) | meta/llama-3.1-8b-instruct |
-| OpenAI (synthesis primary) | gpt-4o + json_schema |
-| DeepSeek | code retained — **not** on live MVP path |
+| NVIDIA NIM (text fallback) | openai/gpt-oss-20b (llama-3.1-8b-instruct EOL 2026-08-26) |
+| OpenAI (synthesis **target**, D-7/D-8) | gpt-4o + json_schema — `ACTIVE_SYNTHESIS_PROVIDER=openai` |
+| DeepSeek (synthesis **runtime default**) | deepseek-v4-pro — `ACTIVE_SYNTHESIS_PROVIDER=deepseek` |
 
 ## Structural Seed
 

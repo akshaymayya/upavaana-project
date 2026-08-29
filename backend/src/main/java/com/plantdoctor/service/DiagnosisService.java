@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.plantdoctor.config.DiagnosisProperties;
 import com.plantdoctor.entity.Disease;
 import com.plantdoctor.entity.Plant;
 import com.plantdoctor.entity.Query;
@@ -32,17 +33,20 @@ public class DiagnosisService {
 	private static final String UPLOAD_DIR = "uploads";
 	private static final int MIN_SYMPTOM_SCORE = 4;
 	private static final int MAX_SYMPTOM_CANDIDATES = 3;
+	private static final int MAX_PLANT_NAME_CANDIDATES = 5;
 
 	private final DiseaseRepository diseaseRepository;
 	private final QueryRepository queryRepository;
 	private final NvidiaClientService nvidiaClientService;
+	private final DiagnosisProperties diagnosisProperties;
 	private final ObjectMapper objectMapper;
 
 	public DiagnosisService(DiseaseRepository diseaseRepository, QueryRepository queryRepository,
-			NvidiaClientService nvidiaClientService) {
+			NvidiaClientService nvidiaClientService, DiagnosisProperties diagnosisProperties) {
 		this.diseaseRepository = diseaseRepository;
 		this.queryRepository = queryRepository;
 		this.nvidiaClientService = nvidiaClientService;
+		this.diagnosisProperties = diagnosisProperties;
 		this.objectMapper = new ObjectMapper();
 	}
 
@@ -66,8 +70,19 @@ public class DiagnosisService {
 
 			List<DiseaseCandidate> candidateDiseases = findCandidateDiseases(symptomsDescription);
 
-			DiagnosisResult diagnosis = nvidiaClientService.synthesizeDiagnosisWithOpenAi(symptomsDescription,
-					candidateDiseases);
+			String provider = diagnosisProperties.resolvedProvider();
+			log.info("Active synthesis provider={} (os.env={} sysprop={} bound={})", provider,
+					System.getenv(DiagnosisProperties.ENV_ACTIVE_SYNTHESIS_PROVIDER),
+					System.getProperty(DiagnosisProperties.ENV_ACTIVE_SYNTHESIS_PROVIDER),
+					diagnosisProperties.getActiveSynthesisProvider());
+			DiagnosisResult diagnosis;
+			if (DiagnosisProperties.PROVIDER_OPENAI.equals(provider)) {
+				diagnosis = nvidiaClientService.synthesizeDiagnosisWithOpenAi(symptomsDescription, candidateDiseases);
+			} else if (DiagnosisProperties.PROVIDER_GROQ.equals(provider)) {
+				diagnosis = nvidiaClientService.synthesizeDiagnosisWithGroq(symptomsDescription, candidateDiseases);
+			} else {
+				diagnosis = nvidiaClientService.synthesizeDiagnosisWithDeepSeek(symptomsDescription, candidateDiseases);
+			}
 
 			String resultJson = objectMapper.writeValueAsString(diagnosis);
 			Query queryRecord = new Query(imageUrl, resultJson);
@@ -116,11 +131,24 @@ public class DiagnosisService {
 		List<DiseaseCandidate> candidates = new ArrayList<>();
 		Set<Disease> seenDiseases = new HashSet<>();
 
+		List<DiseaseCandidate> plantNameMatches = new ArrayList<>();
 		for (Disease disease : allDiseases) {
 			if (matchesPlantName(lowerDesc, disease.getPlant())) {
-				candidates.add(new DiseaseCandidate(disease, MatchType.PLANT_NAME));
+				plantNameMatches.add(new DiseaseCandidate(disease, MatchType.PLANT_NAME));
 				seenDiseases.add(disease);
 			}
+		}
+		int plantNameBeforeCap = plantNameMatches.size();
+		if (plantNameMatches.size() > MAX_PLANT_NAME_CANDIDATES) {
+			plantNameMatches = new ArrayList<>(plantNameMatches.subList(0, MAX_PLANT_NAME_CANDIDATES));
+			seenDiseases.clear();
+			for (DiseaseCandidate c : plantNameMatches) {
+				seenDiseases.add(c.disease());
+			}
+		}
+		candidates.addAll(plantNameMatches);
+		if (plantNameBeforeCap != plantNameMatches.size()) {
+			log.info("Plant-name candidates capped from {} to {}", plantNameBeforeCap, plantNameMatches.size());
 		}
 
 		List<ScoredDisease> symptomScored = new ArrayList<>();

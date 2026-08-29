@@ -22,15 +22,28 @@ app:
   seed:
     enabled: ${SEED_ON_STARTUP:false}
     csv-path: ${SEED_CSV_PATH:./plant-disease-seed-template.csv}
+  diagnosis:
+    # deepseek = NVIDIA NIM DeepSeek (MVP). groq = Groq. openai = D-7/D-8 when billing is approved. Restart after change.
+    # OS env ACTIVE_SYNTHESIS_PROVIDER is also read in DiagnosisProperties (wins over a literal YAML default).
+    active-synthesis-provider: ${ACTIVE_SYNTHESIS_PROVIDER:deepseek}
 
 nvidia:
   api-key: ${NVIDIA_API_KEY:}
   base-url: ${NVIDIA_BASE_URL:https://integrate.api.nvidia.com/v1}
   vision-model: ${NVIDIA_VISION_MODEL:meta/llama-3.2-11b-vision-instruct}
-  text-model: ${NVIDIA_TEXT_MODEL:meta/llama-3.1-8b-instruct}
+  # llama-3.1-8b-instruct EOL 2026-08-26 (410 Gone). gpt-oss-20b verified live on integrate.api.nvidia.com.
+  text-model: ${NVIDIA_TEXT_MODEL:openai/gpt-oss-20b}
+  # Bound for old .env files only — official DeepSeek / OpenRouter are not called.
   deepseek-api-key: ${DEEPSEEK_API_KEY:}
   deepseek-base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com/v1}
-  deepseek-model: ${DEEPSEEK_MODEL:deepseek-v4-pro}
+  deepseek-model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+  deepseek-nim-model: ${DEEPSEEK_NIM_MODEL:deepseek-ai/deepseek-v4-pro-0813}
+
+groq:
+  api-key: ${GROQ_API_KEY:}
+  base-url: ${GROQ_BASE_URL:https://api.groq.com/openai/v1}
+  # llama-3.3-70b-versatile shut down 2026-08-16 for free/developer. Override with GROQ_MODEL.
+  model: ${GROQ_MODEL:openai/gpt-oss-120b}
 
 openai:
   api-key: ${OPENAI_API_KEY:}
