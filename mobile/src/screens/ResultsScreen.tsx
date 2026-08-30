@@ -12,6 +12,7 @@ import {
 import { RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
+import FormattedGuidanceText from '../components/FormattedGuidanceText';
 import { colors } from '../theme/colors';
 
 type ResultsScreenRouteProp = RouteProp<RootStackParamList, 'Results'>;
@@ -76,7 +77,10 @@ export default function ResultsScreen({ route, navigation }: Props) {
 
           <View style={styles.infoCard}>
             <Text style={styles.label}>RECOMMENDED ACTION</Text>
-            <Text style={styles.bodyText}>{diagnosis.solution || 'No specific treatment suggested.'}</Text>
+            <FormattedGuidanceText
+              text={(diagnosis.solution || '').trim() || 'No specific treatment suggested.'}
+              style={styles.bodyText}
+            />
           </View>
 
           {diagnosis.confidence_note ? (
