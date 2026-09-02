@@ -14,6 +14,10 @@ public class NvidiaProperties {
 	private String deepseekBaseUrl = "https://api.deepseek.com/v1";
 	private String deepseekModel = "deepseek-v4-flash";
 	private String deepseekNimModel = "deepseek-ai/deepseek-v4-pro-0813";
+	/** Vision HTTP connect. Independent of Gemini leftover time. */
+	private int connectTimeoutMs = 4000;
+	/** Vision HTTP read. Sized from observed NVIDIA HTML-img successes (~1–5s), same order as Gemini. */
+	private int readTimeoutMs = 8000;
 
 	public String getApiKey() { return apiKey; }
 	public void setApiKey(String apiKey) { this.apiKey = apiKey; }
@@ -38,4 +42,10 @@ public class NvidiaProperties {
 
 	public String getDeepseekNimModel() { return deepseekNimModel; }
 	public void setDeepseekNimModel(String deepseekNimModel) { this.deepseekNimModel = deepseekNimModel; }
+
+	public int getConnectTimeoutMs() { return connectTimeoutMs; }
+	public void setConnectTimeoutMs(int connectTimeoutMs) { this.connectTimeoutMs = connectTimeoutMs; }
+
+	public int getReadTimeoutMs() { return readTimeoutMs; }
+	public void setReadTimeoutMs(int readTimeoutMs) { this.readTimeoutMs = readTimeoutMs; }
 }

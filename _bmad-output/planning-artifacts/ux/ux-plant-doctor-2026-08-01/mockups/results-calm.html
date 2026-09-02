@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Results — calm framing (spine sketch)</title>
+  <style>
+    :root {
+      --primary: #003A33;
+      --secondary: #017B00;
+      --bg: #F7FAF8;
+      --surface: #FFFFFF;
+      --text: #003A33;
+      --text2: #3D5C55;
+      --muted: #7A9189;
+      --border: #DDE8E3;
+      --healthy-bg: #E6F4E6;
+      --cta: #FE8D10;
+    }
+    body { font-family: system-ui, sans-serif; background: #e8eee9; margin: 0; padding: 24px; color: var(--text); }
+    h1 { font-size: 14px; font-weight: 600; color: var(--muted); }
+    .note { font-size: 12px; color: var(--muted); margin-bottom: 24px; }
+    .row { display: flex; flex-wrap: wrap; gap: 20px; }
+    .phone {
+      width: 320px; background: var(--bg); border-radius: 20px; padding: 24px; box-shadow: 0 8px 24px rgba(0,58,51,0.08);
+    }
+    .logo { text-align: center; font-size: 11px; letter-spacing: 2px; color: var(--primary); font-weight: 700; margin-bottom: 16px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 16px 20px; margin-bottom: 12px; }
+    .label { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--muted); text-transform: uppercase; margin-bottom: 6px; }
+    .plant { font-size: 22px; font-weight: 800; }
+    .diag { font-size: 16px; font-weight: 700; }
+    .body { font-size: 14px; color: var(--text2); line-height: 1.45; }
+    .healthy { background: var(--healthy-bg); border-color: #B8DFB8; font-weight: 700; color: var(--secondary); }
+    .accent { border-left: 3px solid var(--primary); }
+    .plan { background: var(--bg); border-radius: 16px; padding: 4px 12px; }
+    .step { padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .step:last-child { border-bottom: 0; }
+    .day { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--muted); text-transform: uppercase; margin-bottom: 4px; }
+    .conf { font-size: 11px; color: var(--muted); text-align: center; margin-top: 8px; }
+    .cta { background: var(--cta); color: #fff; text-align: center; padding: 14px; border-radius: 16px; font-weight: 700; margin-top: 16px; }
+    .support { font-size: 14px; color: var(--text2); line-height: 1.4; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>UPAVANA Results — P6 / FR-19 sketch</h1>
+  <p class="note">Illustrative only. DESIGN.md and EXPERIENCE.md win on conflict. No ⚠️, no “Issue Detected.”</p>
+  <div class="row">
+    <div class="phone">
+      <div class="logo">UPAVANA</div>
+      <div class="card healthy">Plant looks Healthy!</div>
+      <div class="card"><div class="label">Identified plant</div><div class="plant">Snake plant</div></div>
+      <div class="card"><div class="label">Diagnosis</div><div class="diag">Healthy</div></div>
+      <div class="card accent"><div class="label">Next step</div><div class="body">Keep the current light and watering rhythm.</div></div>
+      <div class="conf">High confidence — plant looks well.</div>
+      <div class="cta">Diagnose Another Plant</div>
+    </div>
+    <div class="phone">
+      <div class="logo">UPAVANA</div>
+      <div class="card"><div class="label">Identified plant</div><div class="plant">Pothos</div></div>
+      <div class="card"><div class="label">Diagnosis</div><div class="diag">Root rot</div></div>
+      <div class="card accent"><div class="label">Next step</div><div class="body">Move to a pot with drainage and let the soil dry before the next water.</div></div>
+      <div class="conf">High — matched to curated research for this plant.</div>
+      <div class="cta">Diagnose Another Plant</div>
+    </div>
+    <div class="phone">
+      <div class="logo">UPAVANA</div>
+      <div class="card"><div class="label">Identified plant</div><div class="plant">Money plant</div></div>
+      <div class="card"><div class="label">Diagnosis</div><div class="diag">Spider mites</div></div>
+      <div class="card">
+        <div class="label">Care plan</div>
+        <div class="plan">
+          <div class="step"><div class="day">Day 1</div><div class="body">Wipe leaves and spray with diluted neem oil.</div></div>
+          <div class="step"><div class="day">Day 2–3</div><div class="body">Repeat the spray; keep the plant isolated.</div></div>
+          <div class="step"><div class="day">Day 4–5</div><div class="body">Check new growth; spray once more if mites remain.</div></div>
+        </div>
+      </div>
+      <div class="conf">Medium — similar symptom pattern; plant type not confirmed in our research.</div>
+      <div class="cta">Diagnose Another Plant</div>
+    </div>
+    <div class="phone">
+      <div class="logo">UPAVANA</div>
+      <div class="card"><div class="label">Identified plant</div><div class="plant">Unknown</div></div>
+      <div class="card">
+        <div class="label">Diagnosis</div>
+        <div class="diag">Unidentified Issue</div>
+        <p class="support">We couldn’t confidently identify this from our curated research, so we’re being cautious rather than guessing.</p>
+      </div>
+      <div class="card accent"><div class="label">Next step</div><div class="body">Move to bright indirect light and check soil moisture before watering again.</div></div>
+      <div class="conf">Low — this isn’t in our curated research yet; general guidance only.</div>
+      <div class="cta">Diagnose Another Plant</div>
+    </div>
+  </div>
+</body>
+</html>

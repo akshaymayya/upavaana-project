@@ -7,6 +7,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 import com.plantdoctor.config.EnvFileLoader;
+import com.plantdoctor.config.GeminiProperties;
 import com.plantdoctor.config.GroqProperties;
 import com.plantdoctor.config.NvidiaProperties;
 import com.plantdoctor.config.OpenAiProperties;
@@ -14,7 +15,7 @@ import com.plantdoctor.config.SeedProperties;
 
 @SpringBootApplication
 @EnableConfigurationProperties({SeedProperties.class, NvidiaProperties.class, OpenAiProperties.class,
-		GroqProperties.class})
+		GroqProperties.class, GeminiProperties.class})
 public class PlantDoctorApiApplication {
 
 	public static void main(String[] args) {

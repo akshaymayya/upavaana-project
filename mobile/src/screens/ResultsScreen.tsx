@@ -14,6 +14,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import FormattedGuidanceText from '../components/FormattedGuidanceText';
 import { colors } from '../theme/colors';
+import { symptomsMatchedDisplay, symptomsMatchedList } from '../types/diagnosis';
 
 type ResultsScreenRouteProp = RouteProp<RootStackParamList, 'Results'>;
 type ResultsScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Results'>;
@@ -68,10 +69,10 @@ export default function ResultsScreen({ route, navigation }: Props) {
             </Text>
           </View>
 
-          {diagnosis.symptoms_matched ? (
+          {symptomsMatchedList(diagnosis).length > 0 ? (
             <View style={styles.infoCard}>
               <Text style={styles.label}>SYMPTOMS OBSERVED</Text>
-              <Text style={styles.bodyText}>{diagnosis.symptoms_matched}</Text>
+              <Text style={styles.bodyText}>{symptomsMatchedDisplay(diagnosis)}</Text>
             </View>
           ) : null}
 

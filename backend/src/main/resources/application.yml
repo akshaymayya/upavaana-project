@@ -23,14 +23,33 @@ app:
     enabled: ${SEED_ON_STARTUP:false}
     csv-path: ${SEED_CSV_PATH:./plant-disease-seed-template.csv}
   diagnosis:
-    # deepseek = NVIDIA NIM DeepSeek (MVP). groq = Groq. openai = D-7/D-8 when billing is approved. Restart after change.
-    # OS env ACTIVE_SYNTHESIS_PROVIDER is also read in DiagnosisProperties (wins over a literal YAML default).
-    active-synthesis-provider: ${ACTIVE_SYNTHESIS_PROVIDER:deepseek}
+    # Live HTTP path always synthesizes with Groq regardless of this value.
+    active-synthesis-provider: ${ACTIVE_SYNTHESIS_PROVIDER:groq}
+    # gemini = Gemini 2.5 Flash (MVP live vision). nvidia = legacy NVIDIA NIM vision (retained, not default).
+    active-vision-provider: ${ACTIVE_VISION_PROVIDER:gemini}
+    # Fallback after transient Gemini failure (503/429/timeout). Set to none to disable.
+    vision-fallback-provider: ${VISION_FALLBACK_PROVIDER:nvidia}
+    # Overall deadline: one Gemini attempt + one NVIDIA attempt + one Groq attempt.
+    # NVIDIA is NOT capped by leftover Gemini vision time.
+    latency-total-ms: ${DIAGNOSIS_LATENCY_TOTAL_MS:28000}
+    latency-vision-total-ms: ${DIAGNOSIS_LATENCY_VISION_TOTAL_MS:16000}
+    latency-vision-fallback-max-ms: ${DIAGNOSIS_LATENCY_VISION_FALLBACK_MAX_MS:8000}
+    latency-synthesis-max-ms: ${DIAGNOSIS_LATENCY_SYNTHESIS_MAX_MS:8000}
+
+gemini:
+  api-key: ${GEMINI_API_KEY:}
+  base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com/v1beta}
+  model: ${GEMINI_VISION_MODEL:gemini-2.5-flash}
+  # Bounded so 503/timeout retries can finish and NVIDIA fallback can run (do not use 60s).
+  connect-timeout-ms: ${GEMINI_CONNECT_TIMEOUT_MS:4000}
+  read-timeout-ms: ${GEMINI_READ_TIMEOUT_MS:8000}
 
 nvidia:
   api-key: ${NVIDIA_API_KEY:}
   base-url: ${NVIDIA_BASE_URL:https://integrate.api.nvidia.com/v1}
   vision-model: ${NVIDIA_VISION_MODEL:meta/llama-3.2-11b-vision-instruct}
+  connect-timeout-ms: ${NVIDIA_CONNECT_TIMEOUT_MS:4000}
+  read-timeout-ms: ${NVIDIA_READ_TIMEOUT_MS:8000}
   # llama-3.1-8b-instruct EOL 2026-08-26 (410 Gone). gpt-oss-20b verified live on integrate.api.nvidia.com.
   text-model: ${NVIDIA_TEXT_MODEL:openai/gpt-oss-20b}
   # Bound for old .env files only — official DeepSeek / OpenRouter are not called.
@@ -44,6 +63,8 @@ groq:
   base-url: ${GROQ_BASE_URL:https://api.groq.com/openai/v1}
   # llama-3.3-70b-versatile shut down 2026-08-16 for free/developer. Override with GROQ_MODEL.
   model: ${GROQ_MODEL:openai/gpt-oss-120b}
+  connect-timeout-ms: ${GROQ_CONNECT_TIMEOUT_MS:4000}
+  read-timeout-ms: ${GROQ_READ_TIMEOUT_MS:8000}
 
 openai:
   api-key: ${OPENAI_API_KEY:}

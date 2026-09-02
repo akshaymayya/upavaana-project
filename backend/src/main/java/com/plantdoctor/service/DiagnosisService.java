@@ -37,14 +37,17 @@ public class DiagnosisService {
 
 	private final DiseaseRepository diseaseRepository;
 	private final QueryRepository queryRepository;
+	private final PlantVisionClient plantVisionClient;
 	private final NvidiaClientService nvidiaClientService;
 	private final DiagnosisProperties diagnosisProperties;
 	private final ObjectMapper objectMapper;
 
 	public DiagnosisService(DiseaseRepository diseaseRepository, QueryRepository queryRepository,
-			NvidiaClientService nvidiaClientService, DiagnosisProperties diagnosisProperties) {
+			PlantVisionClient plantVisionClient, NvidiaClientService nvidiaClientService,
+			DiagnosisProperties diagnosisProperties) {
 		this.diseaseRepository = diseaseRepository;
 		this.queryRepository = queryRepository;
+		this.plantVisionClient = plantVisionClient;
 		this.nvidiaClientService = nvidiaClientService;
 		this.diagnosisProperties = diagnosisProperties;
 		this.objectMapper = new ObjectMapper();
@@ -57,6 +60,11 @@ public class DiagnosisService {
 
 		String filename = saveImage(file);
 		String imageUrl = UPLOAD_DIR + "/" + filename;
+		long requestStart = System.currentTimeMillis();
+		DiagnosisLatencyBudget budget = diagnosisProperties.newLatencyBudget();
+		DiagnosisCallContext.begin(budget);
+		log.info("Diagnosis latency budget totalMs={} visionTotalMs={} nvidiaReadMaxMs={} synthesisMaxMs={}",
+				budget.totalMs(), budget.visionTotalMs(), budget.visionFallbackMaxMs(), budget.synthesisMaxMs());
 
 		try {
 			byte[] imageBytes = file.getBytes();
@@ -65,37 +73,79 @@ public class DiagnosisService {
 				contentType = "image/jpeg";
 			}
 
-			String symptomsDescription = nvidiaClientService.analyzeImage(imageBytes, contentType);
+			String symptomsDescription;
+			long visionStart = System.currentTimeMillis();
+			try {
+				symptomsDescription = plantVisionClient.analyzeImage(imageBytes, contentType);
+			} catch (VisionUnavailableException visionFailure) {
+				long totalMs = System.currentTimeMillis() - requestStart;
+				log.error("Vision analysis unavailable — skipping synthesis. provider={} kind={} totalMs={}",
+						visionFailure.provider(), visionFailure.kind(), totalMs, visionFailure);
+				DiagnosisResult unavailable = DiagnosisPipeline.buildVisionUnavailableResult(visionFailure);
+				String resultJson = objectMapper.writeValueAsString(unavailable);
+				queryRepository.save(new Query(imageUrl, resultJson));
+				return unavailable;
+			}
+			long visionMs = System.currentTimeMillis() - visionStart;
+			log.info("Diagnosis stage=vision durationMs={} remainingTotalMs={}",
+					visionMs, DiagnosisCallContext.current().remainingTotalMs());
+
+			VisionObservationAssessment visionAssessment = VisionObservationAssessment.parse(symptomsDescription);
 			log.info("Vision analysis result: {}", symptomsDescription);
+			log.info("Vision assessment coverage: {}", visionAssessment.diagnosticSummary());
+			log.info("ACTIVE_VISION_PROVIDER={}", diagnosisProperties.resolvedVisionProvider());
+			log.info("ACTIVE_SYNTHESIS_PROVIDER=groq");
 
+			long retrievalStart = System.currentTimeMillis();
 			List<DiseaseCandidate> candidateDiseases = findCandidateDiseases(symptomsDescription);
+			long retrievalMs = System.currentTimeMillis() - retrievalStart;
+			log.info("Diagnosis stage=retrieval durationMs={} candidates={}", retrievalMs, candidateDiseases.size());
 
-			String provider = diagnosisProperties.resolvedProvider();
-			log.info("Active synthesis provider={} (os.env={} sysprop={} bound={})", provider,
-					System.getenv(DiagnosisProperties.ENV_ACTIVE_SYNTHESIS_PROVIDER),
-					System.getProperty(DiagnosisProperties.ENV_ACTIVE_SYNTHESIS_PROVIDER),
-					diagnosisProperties.getActiveSynthesisProvider());
-			DiagnosisResult diagnosis;
-			if (DiagnosisProperties.PROVIDER_OPENAI.equals(provider)) {
-				diagnosis = nvidiaClientService.synthesizeDiagnosisWithOpenAi(symptomsDescription, candidateDiseases);
-			} else if (DiagnosisProperties.PROVIDER_GROQ.equals(provider)) {
-				diagnosis = nvidiaClientService.synthesizeDiagnosisWithGroq(symptomsDescription, candidateDiseases);
-			} else {
-				diagnosis = nvidiaClientService.synthesizeDiagnosisWithDeepSeek(symptomsDescription, candidateDiseases);
+			String resolved = diagnosisProperties.resolvedProvider();
+			if (!DiagnosisProperties.PROVIDER_GROQ.equals(resolved)) {
+				log.warn("Ignoring ACTIVE_SYNTHESIS_PROVIDER={} — live path uses Groq only", resolved);
 			}
 
-			diagnosis = DiagnosisHealthConsistency.enforce(diagnosis);
+			DiagnosisResult diagnosis;
+			long synthesisStart = System.currentTimeMillis();
+			try {
+				diagnosis = nvidiaClientService.synthesizeDiagnosisWithGroq(symptomsDescription, candidateDiseases);
+			} catch (Exception synthesisFailure) {
+				long synthesisMs = System.currentTimeMillis() - synthesisStart;
+				log.error("Diagnosis stage=synthesis provider=groq FAILED durationMs={}: {}",
+						synthesisMs, synthesisFailure.getMessage(), synthesisFailure);
+				diagnosis = DiagnosisPipeline.buildSynthesisUnavailableResult(
+						firstVisionLine(symptomsDescription), synthesisFailure);
+			}
+			long synthesisMs = System.currentTimeMillis() - synthesisStart;
+			log.info("Diagnosis stage=synthesis provider=groq durationMs={} disease={}",
+					synthesisMs, diagnosis.disease_name());
+
+			diagnosis = DiagnosisPipeline.enforce(diagnosis, symptomsDescription, candidateDiseases);
 
 			String resultJson = objectMapper.writeValueAsString(diagnosis);
 			Query queryRecord = new Query(imageUrl, resultJson);
 			queryRepository.save(queryRecord);
 
+			log.info("Diagnosis stage=total durationMs={} visionMs={} retrievalMs={} synthesisMs={} disease={}",
+					System.currentTimeMillis() - requestStart, visionMs, retrievalMs, synthesisMs,
+					diagnosis.disease_name());
 			return diagnosis;
 
 		} catch (IOException e) {
 			log.error("Failed to read uploaded image bytes", e);
 			throw new RuntimeException("Failed to read image file: " + e.getMessage(), e);
+		} finally {
+			DiagnosisCallContext.end();
 		}
+	}
+
+	private static String firstVisionLine(String visionText) {
+		if (visionText == null || visionText.isBlank()) {
+			return "Unknown";
+		}
+		String first = visionText.strip().split("\\R", 2)[0].trim();
+		return first.isEmpty() ? "Unknown" : first;
 	}
 
 	private String saveImage(MultipartFile file) {

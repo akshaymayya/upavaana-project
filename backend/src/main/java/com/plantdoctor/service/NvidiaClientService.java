@@ -1,10 +1,23 @@
 package com.plantdoctor.service;
 
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +31,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.plantdoctor.config.DiagnosisProperties;
 import com.plantdoctor.config.GroqProperties;
 import com.plantdoctor.config.NvidiaProperties;
 import com.plantdoctor.config.OpenAiProperties;
@@ -35,38 +49,22 @@ public class NvidiaClientService {
 	private final RestTemplate restTemplate;
 	private final RestTemplate deepSeekRestTemplate;
 	private final RestTemplate openAiRestTemplate;
+	private final RestTemplate groqRestTemplate;
 	private final ObjectMapper objectMapper;
 
 	private static final String GPT_4O = "gpt-4o";
 
-	static final String VISION_ANALYSIS_PROMPT =
-			"You are an expert plant pathologist and botanist. Analyze the uploaded photo carefully.\n\n" +
-			"First describe LEAF MORPHOLOGY before naming the plant:\n" +
-			"- Leaf shape (oval, lanceolate, lobed, compound, etc.)\n" +
-			"- Edge/margin (smooth, serrated, wavy)\n" +
-			"- Texture (thick/succulent, thin, leathery, fuzzy)\n" +
-			"- Venation pattern if visible\n" +
-			"- Growth habit clues (woody shrub/tree branch, herbaceous stem, vine, succulent rosette)\n\n" +
-			"Then give your best plant identification. Do not default a single palmate/lobed ornamental leaf to rose. " +
-			"Broad palmate leaves with 3–5 lobes and a toothed margin are often hibiscus (or similar mallow); rose leaflets are usually smaller and pinnately compound. " +
-			"If uncertain, say so honestly — e.g. " +
-			"\"possibly hibiscus or another woody ornamental with palmate leaves\" — " +
-			"rather than confidently guessing a poor match like lettuce or rose for the wrong leaf type.\n\n" +
-			"SMALL-SCALE DAMAGE (required scan):\n" +
-			"- Look carefully across the entire visible leaf surface of every leaf in frame — not only large, obvious symptoms.\n" +
-			"- Search for small holes, pinholes, chew marks, ragged edges, stippling, or other minor pest/mechanical damage, even if only a few marks on one leaf.\n" +
-			"- If multiple leaves or plants are visible, examine each visible leaf individually. Report findings per leaf (or say which leaves look clear vs damaged). Do not give one blanket \"the plant looks healthy\" summary while skipping leaves.\n" +
-			"- Do not conclude healthy / no disease / no pests unless you have actually scanned for this small-scale damage. Large clean areas do not prove the photo is healthy if you have not inspected margins and the rest of the visible surface.\n\n" +
-			"Finally list all visible symptoms in detail (color, pattern, location on leaf): " +
-			"spots, lesions, halos, yellowing, wilting, mold, pests, small holes, chew marks, etc.\n\n" +
-			"Write a cohesive description covering morphology, plant guess (with uncertainty if needed), per-leaf or per-region findings, and symptoms.";
+	static final String VISION_ANALYSIS_PROMPT = VisionAnalysisPrompts.TEXT;
 
 	static final String SYNTHESIS_EVIDENCE_AND_FORMAT =
 			"COMMIT: One disease_name only. Do not blend two theories into disease_name or as equal-weight steps in solution.\n" +
-			"EVIDENCE WEIGHT: Specific unambiguous vision (holes, chew marks, visible insects, ragged chewing) outranks generic multi-cause signs (yellowing, wilting). " +
-			"If both are present, they DISAGREE — pick the pest/chew diagnosis and treatment. Do not treat yellowing as a second equal cause. " +
-			"Do not copy a wilt/fertilizer/pH DB essay as the main plan when vision shows chewing/holes. Weaker alternatives belong only in confidence_note.\n" +
-			"SOLUTION FORMAT: Lead with one clear sentence for the primary action. Put real newline characters between steps inside the JSON string (not a single paragraph). Wrap the key treatment phrase in double asterisks, e.g. **neem oil spray**. " +
+			"EVIDENCE: Separate what the photo shows (visible signs) from what you infer (cause). Evaluate tissue damage, pest presence, disease signs, and abiotic stress independently — absence of one does NOT prove absence of others (no holes ≠ no pests; no discoloration ≠ healthy).\n" +
+			"Spots, necrotic lesions, halos, yellowing, or discolored tissue are NOT pest evidence by themselves — do not call them holes, pinholes, or chew marks unless vision describes true perforations or ragged feeding margins.\n" +
+			"PEST TREATMENT: Recommend **horticultural oil**, **neem oil**, insecticide, or insecticidal soap ONLY when vision cites pest-specific evidence: visible attached insects, scale-like colonies, mealybugs, webbing, stippling, leaf mines, frass, caterpillars, or clear chewing/feeding holes with ragged margins. " +
+			"Do NOT recommend pest control when evidence points to leaf-spot, blight, mildew, nutrient, or abiotic patterns.\n" +
+			"CAUSE MATCH: Treatment must match the supported cause. Lesion/spot patterns → disease-management (remove affected leaves, improve airflow, reduce leaf wetness). Uncertain cause → 'Unidentified Issue' with cautious care — not a default insecticide lead.\n" +
+			"UNCERTAINTY: If evidence is ambiguous, say so in confidence_note (Low/Medium). Separate diagnostic confidence (what the photo shows) from retrieval confidence (KB match). Do not invent spray schedules or repeat intervals (e.g. 7–10 days); say follow the **product label** when mentioning any product.\n" +
+			"SOLUTION FORMAT: Lead with one clear sentence for the primary action. Put real newline characters between steps inside the JSON string (not a single paragraph). Wrap the key treatment phrase in double asterisks, e.g. **remove affected leaves** or **improve airflow** (pest products only when pest evidence exists). " +
 			"If disease_name is Healthy, keep solution short (continue current care) with no pest lead. Do not wrap the JSON object in markdown fences.\n";
 
 	static final String SYNTHESIS_SYSTEM_PROMPT =
@@ -77,20 +75,37 @@ public class NvidiaClientService {
 			"2. PLANT_NAME_MATCH records: Use when both the plant and symptoms align with the Vision Analysis. Base treatment on the DB solution.\n" +
 			"3. SYMPTOM_PATTERN_MATCH records: The DB plant may differ from the photographed plant. If symptoms closely match, you MAY diagnose using that disease name and solution. " +
 			"In confidence_note, explain that symptoms are consistent with this disease pattern seen across many species, but the exact plant type was not confirmed in our database.\n" +
-			"4. NO DB MATCH: If no record fits, set disease_name to 'Unidentified Issue', is_healthy to false, and give generic care advice labeled as not from curated research. Never use Healthy as a stand-in for a missing KB row.\n" +
-			"5. HEALTHY PLANT: Set disease_name to 'Healthy' and is_healthy to true ONLY if Vision Analysis reports no visible symptoms at all. If vision describes damage, holes, discoloration, pests, or similar, is_healthy must be false. If symptoms_matched describes an issue, disease_name cannot be Healthy.\n" +
+			"4. NO DB MATCH: If no KB record fits, do NOT default to 'Unidentified Issue' when Vision Analysis clearly supports a broad category (e.g. scale insect infestation, aphid infestation, leaf-spot disease). Use that supported category with appropriate uncertainty in confidence_note. Reserve 'Unidentified Issue' for genuinely ambiguous or insufficient visual evidence.\n" +
+			"5. HEALTHY PLANT: Set disease_name to 'Healthy' and is_healthy to true ONLY when Vision Analysis positively confirms ALL categories are negative: no tissue damage, no pest structures/insects, no disease signs, no abiotic stress — after a thorough scan including leaf surface and veins. "
+			+ "Never output Healthy or 'no visible symptoms' when vision describes lesions, necrosis, yellowing, spots, or other abnormalities. Unknown plant species or weak KB retrieval is NOT evidence of health. " +
+			"If vision describes attached organisms, scale-like bumps, colonies, or possible pests, is_healthy must be false and symptoms_matched must describe them — never copy \"no pests\" or \"healthy\" when vision listed pest evidence. " +
+			"If vision describes damage, holes, discoloration, or similar, is_healthy must be false. If symptoms_matched describes an issue, disease_name cannot be Healthy.\n" +
 			"6. OUTPUT: Respond with ONLY a valid raw JSON object. No code fences around the JSON. Double-asterisk bold is required inside solution string values for the key action.\n" +
-			"7. SPECIFIC: disease_name must be a concrete disease or pest when symptoms allow (e.g. chewing pest damage), not vague 'fungal infection'.\n" +
+			"7. SPECIFIC: disease_name should reflect the best-supported cause from vision (e.g. Leaf-spot disease, Scale insect infestation, Aphid infestation). Use 'Unidentified Issue' only when visual evidence is insufficient or ambiguous — weak KB retrieval must not erase strong visual pest or disease evidence. "
+			+ "Never diagnose a disease or pest from KB/plant identity alone when vision reports no abnormality. Natural variegation and cultivar coloration are not leaf-spot disease. disease_name, symptoms_matched, solution, and is_healthy must be internally consistent.\n" +
 			"8. " + SYNTHESIS_EVIDENCE_AND_FORMAT + "\n" +
 			"Required JSON fields:\n" +
 			"{\n" +
 			"  \"plant_name\": \"exact plant name from vision analysis\",\n" +
 			"  \"disease_name\": \"disease or pest name, or 'Healthy', or 'Unidentified Issue'\",\n" +
-			"  \"symptoms_matched\": \"specific symptoms you identified from the photo description\",\n" +
+			"  \"symptoms_matched\": [\"specific symptoms you identified from the photo\"],\n" +
 			"  \"solution\": \"primary action then newline-separated short steps with **key phrase**\",\n" +
 			"  \"confidence_note\": \"High/Medium/Low — brief one-sentence reasoning\",\n" +
 			"  \"is_healthy\": false\n" +
 			"}";
+
+	static final String GROQ_SYNTHESIS_SYSTEM_PROMPT =
+			"Reply with ONLY a raw JSON object. Types: plant_name string, disease_name string, "
+					+ "symptoms_matched JSON array of strings, solution string, confidence_note string, is_healthy boolean.\n"
+					+ "Never send symptoms_matched as a single string. Example: "
+					+ "\"symptoms_matched\": [\"yellow spots\", \"brown lesions\"]. "
+					+ "plant_name, disease_name, solution, and confidence_note must be strings, never arrays.\n"
+					+ "Be concise: plant identification, observed issue, confidence, evidence-based reason, and action.\n"
+					+ "plant_name comes from vision. Healthy/is_healthy true ONLY when tissue, pests, disease signs, and abiotic stress are all ABSENT. "
+					+ "UNKNOWN or missing sections are never Healthy.\n"
+					+ "Do not invent causes, pests, treatments, or spray schedules. KB may name a cause only if vision shows a matching abnormality. "
+					+ "Natural variegation is not disease. Physical damage is not a confirmed pest unless pests are present.\n"
+					+ "confidence_note: High/Medium/Low plus one sentence from image evidence only.";
 
 	public NvidiaClientService(NvidiaProperties nvidiaProperties, OpenAiProperties openAiProperties,
 			GroqProperties groqProperties) {
@@ -99,11 +114,13 @@ public class NvidiaClientService {
 		this.groqProperties = groqProperties;
 		this.objectMapper = new ObjectMapper();
 		
-		// NVIDIA vision can exceed 25s when the hosted NIM is queued (2026-08-27: dual 25s timeouts, ~52s fail, DeepSeek never ran).
+		// NVIDIA vision fallback: provider-owned timeouts (not Gemini leftovers).
 		SimpleClientHttpRequestFactory fastFactory = new SimpleClientHttpRequestFactory();
-		fastFactory.setConnectTimeout(25000);
-		fastFactory.setReadTimeout(60000);
+		fastFactory.setConnectTimeout(nvidiaProperties.getConnectTimeoutMs());
+		fastFactory.setReadTimeout(nvidiaProperties.getReadTimeoutMs());
 		this.restTemplate = new RestTemplate(fastFactory);
+		log.info("NVIDIA vision default HTTP timeouts: connect={}ms read={}ms (not capped by leftover Gemini time)",
+				nvidiaProperties.getConnectTimeoutMs(), nvidiaProperties.getReadTimeoutMs());
 
 		// Fail NIM DeepSeek quickly so Groq/text fallback can run; 90s stalls the mobile client.
 		SimpleClientHttpRequestFactory deepSeekFactory = new SimpleClientHttpRequestFactory();
@@ -115,6 +132,170 @@ public class NvidiaClientService {
 		openAiFactory.setConnectTimeout(25000);
 		openAiFactory.setReadTimeout(60000);
 		this.openAiRestTemplate = new RestTemplate(openAiFactory);
+
+		SimpleClientHttpRequestFactory groqFactory = new SimpleClientHttpRequestFactory();
+		groqFactory.setConnectTimeout(groqProperties.getConnectTimeoutMs());
+		groqFactory.setReadTimeout(groqProperties.getReadTimeoutMs());
+		this.groqRestTemplate = new RestTemplate(groqFactory);
+		log.info("Groq HTTP timeouts configured: connect={}ms read={}ms",
+				groqProperties.getConnectTimeoutMs(), groqProperties.getReadTimeoutMs());
+	}
+
+	private RestTemplate nvidiaVisionClientForBudget() {
+		DiagnosisLatencyBudget budget = DiagnosisCallContext.current();
+		int connect = nvidiaProperties.getConnectTimeoutMs();
+		int read = nvidiaProperties.getReadTimeoutMs();
+		log.info("NVIDIA vision per-call timeouts connect={}ms read={}ms remainingTotalMs={} (provider-owned, not leftover Gemini time)",
+				connect, read, budget.remainingTotalMs());
+		if (!budget.canStartProviderCall()) {
+			throw new VisionUnavailableException(
+					DiagnosisProperties.VISION_PROVIDER_NVIDIA,
+					VisionFailureKind.TIMEOUT,
+					"NVIDIA vision skipped — overall diagnosis deadline exhausted");
+		}
+		return httpClient(connect, read);
+	}
+
+	static final int NVIDIA_VISION_MAX_TOKENS = 256;
+	static final int NVIDIA_VISION_CONTEXT_LIMIT_TOKENS = 131_072;
+	static final int NVIDIA_VISION_MAX_INPUT_TOKENS = 40_000;
+	/**
+	 * HTML data-URI is tokenized as text. ~24k estimated tokens took ~14s; ~6.6k took ~3s.
+	 * Stay near the fast path so the 8s NVIDIA read timeout can complete.
+	 */
+	static final int NVIDIA_VISION_TARGET_INPUT_TOKENS = 8_000;
+
+	static String nvidiaVisionUserContent(String prompt, String dataUri) {
+		return prompt + "\n<img src=\"" + dataUri + "\" />";
+	}
+
+	static Map<String, Object> nvidiaVisionRequestBody(String model, String prompt, String dataUri) {
+		return Map.of(
+				"model", model,
+				"messages", List.of(Map.of(
+						"role", "user",
+						"content", nvidiaVisionUserContent(prompt, dataUri))),
+				"max_tokens", NVIDIA_VISION_MAX_TOKENS);
+	}
+
+	static RestTemplate httpClient(int connectTimeoutMs, int readTimeoutMs) {
+		SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+		factory.setConnectTimeout(Math.max(DiagnosisLatencyBudget.MIN_USEFUL_CALL_MS, connectTimeoutMs));
+		factory.setReadTimeout(Math.max(DiagnosisLatencyBudget.MIN_USEFUL_CALL_MS, readTimeoutMs));
+		return new RestTemplate(factory);
+	}
+
+	static int estimateInputTokens(String text) {
+		if (text == null || text.isEmpty()) {
+			return 0;
+		}
+		return (text.length() + 3) / 4;
+	}
+
+	static NvidiaVisionPayload prepareNvidiaVisionPayload(byte[] imageBytes, String mimeType) {
+		if (imageBytes == null || imageBytes.length == 0) {
+			throw new VisionUnavailableException(
+					DiagnosisProperties.VISION_PROVIDER_NVIDIA,
+					VisionFailureKind.UNKNOWN,
+					"NVIDIA vision skipped — empty image");
+		}
+		String prompt = VisionAnalysisPrompts.NVIDIA;
+		String sentMime = StringUtils.hasText(mimeType) ? mimeType : "image/jpeg";
+		NvidiaVisionPayload last = payloadFor(prompt, imageBytes, sentMime, imageBytes.length);
+		if (last.estimatedInputTokens() <= NVIDIA_VISION_TARGET_INPUT_TOKENS) {
+			return last;
+		}
+		int[] edges = { 1024, 768, 512, 384, 256 };
+		float[] qualities = { 0.72f, 0.65f, 0.58f, 0.5f, 0.42f };
+		for (int i = 0; i < edges.length; i++) {
+			byte[] resized = jpegDownscale(imageBytes, edges[i], qualities[i]);
+			if (resized == null || resized.length == 0) {
+				continue;
+			}
+			last = payloadFor(prompt, resized, "image/jpeg", imageBytes.length);
+			if (last.estimatedInputTokens() <= NVIDIA_VISION_TARGET_INPUT_TOKENS) {
+				return last;
+			}
+		}
+		if (last.estimatedInputTokens() > NVIDIA_VISION_MAX_INPUT_TOKENS) {
+			throw new VisionUnavailableException(
+					DiagnosisProperties.VISION_PROVIDER_NVIDIA,
+					VisionFailureKind.UNKNOWN,
+					"NVIDIA vision skipped — estimatedInputTokens=" + last.estimatedInputTokens()
+							+ " exceeds maxInputTokens=" + NVIDIA_VISION_MAX_INPUT_TOKENS
+							+ " (contextLimit=" + NVIDIA_VISION_CONTEXT_LIMIT_TOKENS + ")");
+		}
+		return last;
+	}
+
+	private static NvidiaVisionPayload payloadFor(String prompt, byte[] sent, String mime, int originalBytes) {
+		String dataUri = "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(sent);
+		String userContent = nvidiaVisionUserContent(prompt, dataUri);
+		return new NvidiaVisionPayload(
+				originalBytes,
+				sent.length,
+				prompt.length(),
+				dataUri.length(),
+				dataUri,
+				userContent,
+				estimateInputTokens(userContent));
+	}
+
+	static byte[] jpegDownscale(byte[] imageBytes, int maxEdge, float quality) {
+		try {
+			BufferedImage src = ImageIO.read(new ByteArrayInputStream(imageBytes));
+			if (src == null) {
+				return null;
+			}
+			int width = src.getWidth();
+			int height = src.getHeight();
+			double scale = Math.min(1.0, (double) maxEdge / Math.max(width, height));
+			int newWidth = Math.max(1, (int) Math.round(width * scale));
+			int newHeight = Math.max(1, (int) Math.round(height * scale));
+			BufferedImage rgb = new BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB);
+			Graphics2D graphics = rgb.createGraphics();
+			graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+			graphics.setColor(Color.WHITE);
+			graphics.fillRect(0, 0, newWidth, newHeight);
+			graphics.drawImage(src, 0, 0, newWidth, newHeight, Color.WHITE, null);
+			graphics.dispose();
+			return writeJpeg(rgb, quality);
+		} catch (Exception ex) {
+			return null;
+		}
+	}
+
+	private static byte[] writeJpeg(BufferedImage image, float quality) throws Exception {
+		Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
+		if (!writers.hasNext()) {
+			ByteArrayOutputStream fallback = new ByteArrayOutputStream();
+			ImageIO.write(image, "jpg", fallback);
+			return fallback.toByteArray();
+		}
+		ImageWriter writer = writers.next();
+		ByteArrayOutputStream output = new ByteArrayOutputStream();
+		try (ImageOutputStream ios = ImageIO.createImageOutputStream(output)) {
+			writer.setOutput(ios);
+			ImageWriteParam param = writer.getDefaultWriteParam();
+			if (param.canWriteCompressed()) {
+				param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+				param.setCompressionQuality(Math.max(0.3f, Math.min(0.9f, quality)));
+			}
+			writer.write(null, new IIOImage(image, null, null), param);
+		} finally {
+			writer.dispose();
+		}
+		return output.toByteArray();
+	}
+
+	record NvidiaVisionPayload(
+			int originalImageBytes,
+			int sentImageBytes,
+			int promptChars,
+			int dataUriChars,
+			String dataUri,
+			String userContent,
+			int estimatedInputTokens) {
 	}
 
 	/**
@@ -125,8 +306,23 @@ public class NvidiaClientService {
 			throw new IllegalStateException("NVIDIA_API_KEY is not configured.");
 		}
 
-		String base64Image = Base64.getEncoder().encodeToString(imageBytes);
-		String imageUrl = "data:" + mimeType + ";base64," + base64Image;
+		long buildStart = System.currentTimeMillis();
+		NvidiaVisionPayload payload = prepareNvidiaVisionPayload(imageBytes, mimeType);
+		Map<String, Object> requestBody = nvidiaVisionRequestBody(
+				nvidiaProperties.getVisionModel(),
+				VisionAnalysisPrompts.NVIDIA,
+				payload.dataUri());
+		long buildMs = System.currentTimeMillis() - buildStart;
+		log.info(
+				"NVIDIA vision payload originalImageBytes={} sentImageBytes={} promptChars={} dataUriChars={} estimatedInputTokens={} targetInputTokens={} maxInputTokens={} buildMs={}",
+				payload.originalImageBytes(),
+				payload.sentImageBytes(),
+				payload.promptChars(),
+				payload.dataUriChars(),
+				payload.estimatedInputTokens(),
+				NVIDIA_VISION_TARGET_INPUT_TOKENS,
+				NVIDIA_VISION_MAX_INPUT_TOKENS,
+				buildMs);
 
 		String url = nvidiaProperties.getBaseUrl() + "/chat/completions";
 
@@ -134,39 +330,21 @@ public class NvidiaClientService {
 		headers.setContentType(MediaType.APPLICATION_JSON);
 		headers.setBearerAuth(nvidiaProperties.getApiKey());
 
-		Map<String, Object> textPart = Map.of(
-				"type", "text",
-				"text", VISION_ANALYSIS_PROMPT
-		);
-
-		Map<String, Object> imagePart = Map.of(
-				"type", "image_url",
-				"image_url", Map.of("url", imageUrl)
-		);
-
-		Map<String, Object> message = Map.of(
-				"role", "user",
-				"content", List.of(textPart, imagePart)
-		);
-
-		Map<String, Object> requestBody = Map.of(
-				"model", nvidiaProperties.getVisionModel(),
-				"messages", List.of(message),
-				"max_tokens", 768
-		);
-
-		int maxAttempts = 2;
+		int maxAttempts = 1;
 		Exception lastException = null;
 		long startTime = System.currentTimeMillis();
+		RestTemplate visionHttp = nvidiaVisionClientForBudget();
 
 		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
-				log.info("Calling Nvidia Vision NIM model (attempt {}/{}): {}", attempt, maxAttempts, nvidiaProperties.getVisionModel());
+				log.info("NVIDIA vision request provider=nvidia model={} attempt={}/{} estimatedInputTokens={} readTimeoutMs={}",
+						nvidiaProperties.getVisionModel(), attempt, maxAttempts, payload.estimatedInputTokens(),
+						nvidiaProperties.getReadTimeoutMs());
 				long callStart = System.currentTimeMillis();
 				HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-				Map<?, ?> response = restTemplate.postForObject(url, entity, Map.class);
-				long callDuration = System.currentTimeMillis() - callStart;
-				log.info("Nvidia Vision NIM call succeeded in {} ms (attempt {}/{})", callDuration, attempt, maxAttempts);
+				Map<?, ?> response = visionHttp.postForObject(url, entity, Map.class);
+				long httpWaitMs = System.currentTimeMillis() - callStart;
+				long parseStart = System.currentTimeMillis();
 
 				if (response == null) {
 					throw new RuntimeException("Received empty response from NVIDIA NIM Vision API.");
@@ -179,12 +357,25 @@ public class NvidiaClientService {
 
 				Map<?, ?> choice = (Map<?, ?>) choices.get(0);
 				Map<?, ?> responseMessage = (Map<?, ?>) choice.get("message");
-				return (String) responseMessage.get("content");
+				String content = (String) responseMessage.get("content");
+				long parseMs = System.currentTimeMillis() - parseStart;
+				log.info("NVIDIA vision success provider=nvidia model={} httpStatus=200 httpWaitMs={} parseMs={} buildMs={}",
+						nvidiaProperties.getVisionModel(), httpWaitMs, parseMs, buildMs);
+				return content;
 
 			} catch (Exception ex) {
 				lastException = ex;
 				long callDuration = System.currentTimeMillis() - startTime;
-				log.warn("Nvidia Vision NIM call failed on attempt {}/{} after {} ms total: {}", attempt, maxAttempts, callDuration, ex.getMessage());
+				Integer httpStatus = null;
+				if (ex instanceof HttpStatusCodeException httpEx) {
+					httpStatus = httpEx.getStatusCode().value();
+				}
+				log.warn("NVIDIA vision failed provider=nvidia model={} errorType={} httpStatus={} durationMs={}: {}",
+						nvidiaProperties.getVisionModel(),
+						ex.getClass().getSimpleName(),
+						httpStatus,
+						callDuration,
+						ex.getMessage());
 				if (attempt < maxAttempts) {
 					try {
 						Thread.sleep(1000);
@@ -196,7 +387,17 @@ public class NvidiaClientService {
 			}
 		}
 
-		throw new RuntimeException("Error analyzing image via NVIDIA NIM (failed after " + maxAttempts + " attempts): " + lastException.getMessage(), lastException);
+		VisionUnavailableException unavailable = VisionFailureSupport.toUnavailable(
+				DiagnosisProperties.VISION_PROVIDER_NVIDIA, lastException);
+		if (unavailable != null) {
+			throw unavailable;
+		}
+		throw new VisionUnavailableException(
+				DiagnosisProperties.VISION_PROVIDER_NVIDIA,
+				VisionFailureKind.UNKNOWN,
+				"Error analyzing image via NVIDIA NIM (failed after " + maxAttempts + " attempts): "
+						+ (lastException == null ? "unknown" : lastException.getMessage()),
+				lastException);
 	}
 
 	/**
@@ -231,7 +432,7 @@ public class NvidiaClientService {
 				"{\n" +
 				"  \"plant_name\": \"Exact plant name from Vision Analysis\",\n" +
 				"  \"disease_name\": \"Matched disease name, or 'Unidentified Issue', or 'Healthy'\",\n" +
-				"  \"symptoms_matched\": \"Specific symptoms visible in the photo\",\n" +
+				"  \"symptoms_matched\": [\"Specific symptoms visible in the photo\"],\n" +
 				"  \"solution\": \"Primary action, then newline-separated short steps with **key phrase**\",\n" +
 				"  \"confidence_note\": \"High / Medium / Low + one-sentence reason\",\n" +
 				"  \"is_healthy\": false\n" +
@@ -401,8 +602,7 @@ public class NvidiaClientService {
 		String apiKey = groqProperties.getApiKey() == null ? "" : groqProperties.getApiKey().trim();
 		if (!StringUtils.hasText(apiKey)
 				|| "your_groq_api_key_here".equalsIgnoreCase(apiKey)) {
-			log.warn("GROQ_API_KEY not set — falling back to NVIDIA text model.");
-			return synthesizeDiagnosis(visionDescription, candidateDiseases);
+			throw new IllegalStateException("GROQ_API_KEY is not configured.");
 		}
 
 		String baseUrl = groqProperties.getBaseUrl();
@@ -423,8 +623,10 @@ public class NvidiaClientService {
 		headers.setContentType(MediaType.APPLICATION_JSON);
 		headers.setBearerAuth(apiKey);
 
-		String systemPrompt = synthesisSystemPrompt();
-		String userPrompt = synthesisUserPrompt(visionDescription, candidateDiseases);
+		String systemPrompt = GROQ_SYNTHESIS_SYSTEM_PROMPT;
+		String userPrompt = compactSynthesisUserPrompt(visionDescription, candidateDiseases);
+		log.info("Groq prompt sizes: systemChars={} userChars={} candidates={}",
+				systemPrompt.length(), userPrompt.length(), candidateDiseases.size());
 
 		Map<String, Object> requestBody = new HashMap<>();
 		requestBody.put("model", model);
@@ -433,18 +635,26 @@ public class NvidiaClientService {
 				Map.of("role", "user", "content", userPrompt)
 		));
 		requestBody.put("temperature", 0.2);
-		requestBody.put("max_tokens", 2048);
+		requestBody.put("max_tokens", 1024);
 		requestBody.put("response_format", Map.of("type", "json_object"));
 
-		int maxAttempts = 2;
+		DiagnosisLatencyBudget budget = DiagnosisCallContext.current();
+		int groqConnect = budget.groqConnectTimeoutMs(groqProperties.getConnectTimeoutMs());
+		int groqRead = budget.groqReadTimeoutMs(groqProperties.getReadTimeoutMs());
+		if (!budget.hasUsefulTime(groqRead)) {
+			throw new RuntimeException("Groq synthesis skipped — remaining diagnosis budget exhausted");
+		}
+		RestTemplate groqHttp = httpClient(groqConnect, groqRead);
+
+		int maxAttempts = 1;
 		Exception lastException = null;
 		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
-				log.info("Calling Groq synthesis (attempt {}/{}): {} | DB candidates: {}",
-						attempt, maxAttempts, model, candidateDiseases.size());
+				log.info("Calling Groq synthesis (attempt {}/{}): {} connectTimeout={}ms readTimeout={}ms | DB candidates: {}",
+						attempt, maxAttempts, model, groqConnect, groqRead, candidateDiseases.size());
 				long callStart = System.currentTimeMillis();
 				HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-				Map<?, ?> response = openAiRestTemplate.postForObject(url, entity, Map.class);
+				Map<?, ?> response = groqHttp.postForObject(url, entity, Map.class);
 				long callDuration = System.currentTimeMillis() - callStart;
 				log.info("Groq HTTP {}ms model={} usage {}", callDuration, model, formatUsage(response));
 
@@ -478,9 +688,12 @@ public class NvidiaClientService {
 				break;
 			}
 		}
-		log.warn("Groq synthesis failed — falling back to NVIDIA text model: {}",
-				lastException != null ? lastException.getMessage() : "unknown");
-		return synthesizeDiagnosis(visionDescription, candidateDiseases);
+		log.error("Groq synthesis failed after {} attempts — NVIDIA text synthesis is not used: {}",
+				maxAttempts, lastException != null ? lastException.getMessage() : "unknown");
+		throw new RuntimeException(
+				"Error synthesizing diagnosis via Groq (failed after " + maxAttempts + " attempts): "
+						+ (lastException == null ? "unknown" : lastException.getMessage()),
+				lastException);
 	}
 
 	/**
@@ -597,12 +810,73 @@ public class NvidiaClientService {
 		);
 	}
 
+	static String compactSynthesisUserPrompt(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
+		boolean hasDbMatch = candidateDiseases != null && !candidateDiseases.isEmpty();
+		String dbSection = hasDbMatch
+				? formatCompactCandidateSection(candidateDiseases)
+				: "(No KB candidates. Diagnose only from vision. Do not invent an abnormality.)";
+		String matchGuidance = hasDbMatch
+				? "Use a KB name only if vision shows matching abnormality. Never invent pests or treatments."
+				: "No KB match — if vision shows abnormality use Unidentified Issue; never Healthy from missing KB.";
+		return "=== STRUCTURED VISION ===\n" + compactVisionEvidence(visionDescription) + "\n\n"
+				+ "=== KB CANDIDATES (plant/disease/symptoms only) ===\n" + dbSection + "\n\n"
+				+ matchGuidance + "\nReturn diagnosis JSON. symptoms_matched must be a JSON array of strings.";
+	}
+
+	static String compactVisionEvidence(String visionDescription) {
+		if (visionDescription == null || visionDescription.isBlank()) {
+			return "";
+		}
+		VisionObservationAssessment assessment = VisionObservationAssessment.parse(visionDescription);
+		StringBuilder extracted = new StringBuilder();
+		extracted.append("coverage: ").append(assessment.diagnosticSummary()).append('\n');
+		String firstLine = visionDescription.strip().split("\\R", 2)[0].trim();
+		if (!firstLine.isEmpty()) {
+			extracted.append("plant: ").append(truncate(firstLine, 180)).append('\n');
+		}
+		java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+				"(TISSUE DAMAGE|PEST(?:\\s+SURFACE)?\\s+SCAN|DISEASE SIGNS?|ABIOTIC STRESS|OVERALL(?:\\s+CONCLUSION)?)\\s*:\\s*([^\\n]+)",
+				java.util.regex.Pattern.CASE_INSENSITIVE).matcher(visionDescription);
+		while (matcher.find()) {
+			extracted.append(matcher.group(1).toUpperCase()).append(": ").append(matcher.group(2).trim()).append('\n');
+		}
+		if (extracted.length() < 80) {
+			return truncate(visionDescription, 1200);
+		}
+		return truncate(extracted.toString().trim(), 1400);
+	}
+
+	private static String formatCompactCandidateSection(List<DiseaseCandidate> candidateDiseases) {
+		return candidateDiseases.stream().map(candidate -> {
+			Disease d = candidate.disease();
+			String matchLabel = candidate.matchType() == MatchType.PLANT_NAME
+					? "PLANT_NAME_MATCH"
+					: "SYMPTOM_PATTERN_MATCH";
+			return "[" + matchLabel + "] plant=" + d.getPlant().getName()
+					+ " disease=" + d.getDiseaseName()
+					+ " symptoms=" + truncate(d.getSymptoms(), 240);
+		}).collect(Collectors.joining("\n"));
+	}
+
+	private static String truncate(String value, int maxChars) {
+		if (value == null || value.isBlank()) {
+			return "";
+		}
+		String trimmed = value.trim();
+		if (trimmed.length() <= maxChars) {
+			return trimmed;
+		}
+		return trimmed.substring(0, maxChars) + "…";
+	}
+
 	private Map<String, Object> diagnosisResultJsonSchema() {
 		Map<String, Object> stringType = Map.of("type", "string");
 		Map<String, Object> properties = new HashMap<>();
 		properties.put("plant_name", stringType);
 		properties.put("disease_name", stringType);
-		properties.put("symptoms_matched", stringType);
+		properties.put("symptoms_matched", Map.of(
+				"type", "array",
+				"items", stringType));
 		properties.put("solution", stringType);
 		properties.put("confidence_note", stringType);
 		properties.put("is_healthy", Map.of("type", "boolean"));
@@ -627,7 +901,7 @@ public class NvidiaClientService {
 		}
 		return StringUtils.hasText(parsed.plant_name())
 				&& StringUtils.hasText(parsed.disease_name())
-				&& StringUtils.hasText(parsed.symptoms_matched())
+				&& parsed.hasSymptomsMatched()
 				&& StringUtils.hasText(parsed.solution())
 				&& StringUtils.hasText(parsed.confidence_note())
 				&& parsed.is_healthy() != null;

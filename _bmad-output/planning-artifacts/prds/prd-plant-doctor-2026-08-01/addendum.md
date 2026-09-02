@@ -34,9 +34,27 @@ _Supplements `prd.md`. For architecture and dev agents. Gate 2 aligned with brow
   "plant_name": "Money Plant",
   "disease_name": "Root Rot",
   "symptoms_matched": "Yellowing leaves, soft stems",
-  "solution": "Reduce watering frequency...",
+  "solution": "Let the soil dry, then water less often.",
   "confidence_note": "High — plant and symptoms match knowledge base record",
-  "is_healthy": false
+  "is_healthy": false,
+  "treatment_type": "single_action",
+  "treatment_steps": null
+}
+```
+
+`treatment_type` is `"single_action"` or `"care_plan"`. When `care_plan`, `treatment_steps` is an array of `{ "day": string, "action": string }` (3–5 items). When `single_action`, omit `treatment_steps` or send `null` / `[]`.
+
+**Care-plan example:**
+
+```json
+{
+  "treatment_type": "care_plan",
+  "solution": "Treat spider mites over several days.",
+  "treatment_steps": [
+    { "day": "Today", "action": "Isolate the plant and wipe leaves with a damp cloth." },
+    { "day": "Day 3", "action": "Spray neem oil on top and underside of leaves." },
+    { "day": "Day 7", "action": "Repeat spray; check for new webbing." }
+  ]
 }
 ```
 
@@ -166,9 +184,23 @@ curl.exe -X POST http://localhost:8080/api/admin/seed
 - [ ] Test photos for each must-pass pair (primary OpenAI path)
 - [ ] Healthy images → Healthy, never disease
 - [ ] Low-confidence photo → Unidentified Issue + locked FR-12 copy
+- [ ] Results: no ⚠️ / “Issue Detected”; `single_action` vs `care_plan` render distinctly (FR-19)
 - [ ] **NVIDIA fallback path forced/tested E2E** — same DAC as primary (DAC-6)
 - [ ] Stakeholder dry-run without developer assistance
 - [ ] Disclaimer visible on Results
+
+---
+
+## Architecture & UX follow-up (2026-08-29 — P6 + FR-19)
+
+Product source of truth is `prd.md` (P6, FR-10, FR-12, FR-19). **AD-2 / AD-7 adopted 2026-08-29.** Remaining stale until UX update:
+
+| Artifact | What to change |
+|----------|----------------|
+| **AD-2 / AD-7** | Done — see `ARCHITECTURE-SPINE.md`. Code still lags (Java record + schema + prompts). |
+| **UX `EXPERIENCE.md` / `DESIGN.md`** | Done 2026-08-29 — P6 result header; NEXT STEP vs CARE PLAN layouts; Unidentified locked copy. Live Results screen still lags. |
+
+Do **not** treat current Results warning styling as still required.
 
 ---
 

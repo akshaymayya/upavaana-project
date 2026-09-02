@@ -3,7 +3,7 @@ title: UPAVANA Plant Doctor MVP
 status: draft
 gate: Gate 2 — APPROVED WITH MINOR CHANGES (incorporating stakeholder feedback 2026-08-11)
 created: 2026-08-01
-updated: 2026-08-11
+updated: 2026-08-29
 author: John (Product Manager)
 prepared_for: Aksha → Stakeholder (sir) approval
 sources:
@@ -106,7 +106,7 @@ Yes, they can look at a plant photo. That’s not the gap. The gap is **what the
 | Trained to sound helpful — often **overconfident** when uncertain | Built to **admit uncertainty** (High / Medium / Low confidence; Unidentified Issue when needed) |
 | Mixed-quality plant knowledge from the open web | Answers **grounded in our Knowledge Base** when we have a match |
 | You write a new prompt every time | **One tap:** photo → same clear structure every time |
-| Output format changes every reply | Same fields every time: plant, issue, symptoms, solution, confidence |
+| Output format changes every reply | Same fields every time: plant, issue, symptoms, solution, confidence, treatment shape |
 | No connection to **local** pests, diseases, or climate | `[OPEN]` OQ-8 — opportunity to localize for Indian urban growers |
 
 For a casual planter deciding whether to cut a leaf or spray something, **a confident wrong answer is worse than an honest “I’m not sure — here’s safe general guidance.”** UPAVANA is built for that decision, not for open-ended chat.
@@ -136,6 +136,7 @@ We’re not trying to be the biggest plant app. We’re trying to be the **most 
 | P3 | **Knowledge Base–grounded** recommendations always take precedence over general / unverified responses. |
 | P4 | **Healthy** plants are celebrated as a positive outcome, not a null result. |
 | P5 | **Unidentified Issue** is a valid product outcome, not an error state. |
+| P6 | **Calm, not alarming.** Plant caretakers are typically gentle and caring. Every screen — especially issue/diagnosis states — must feel reassuring and supportive, never like a warning or danger alert. No warning-style iconography (e.g. ⚠️) and no alert copy such as “Issue Detected.” Use a plain result framing. Applies to **all** diagnosis outcomes, including Low-confidence / Unidentified Issue. |
 
 ---
 
@@ -251,7 +252,7 @@ We’re not trying to be the biggest plant app. We’re trying to be the **most 
 | | |
 |---|---|
 | **User questions** | What might be wrong? What to do this week? |
-| **Output** | `plant_name`, `disease_name`, `symptoms_matched`, `solution`, `confidence_note`, `is_healthy` |
+| **Output** | `plant_name`, `disease_name`, `symptoms_matched`, `solution`, `confidence_note`, `is_healthy`, `treatment_type` (`single_action` \| `care_plan`), optional `treatment_steps` |
 | **Differentiator** | KB-grounded when match exists; honest soft fallback when not |
 | **Delivery** | 1-month demo; week-1 E2E; backend/pipeline already running |
 
@@ -263,7 +264,7 @@ We’re not trying to be the biggest plant app. We’re trying to be the **most 
 
 ### 3.1 Jobs To Be Done
 
-- **Functional:** “What’s wrong with my plant?” — identify possible disease or pest from a photo; get steps I can actually do this week.
+- **Functional:** “What’s wrong with my plant?” — identify possible disease or pest from a photo; get **one clear action** or a **short day-labeled care plan**, not an undifferentiated multi-step dump.
 - **Emotional:** Less panic when I see a brown spot; real relief when the plant is healthy.
 - **Contextual:** Answer in under a minute while I’m standing next to the plant — not a 45-minute Google rabbit hole.
 
@@ -297,7 +298,7 @@ Pre-seeded device, known demo photo (once stakeholder names must-pass pairs — 
 
 | Term | Meaning |
 |------|---------|
-| **Diagnosis** | API JSON: `plant_name`, `disease_name`, `symptoms_matched`, `solution`, `confidence_note`, `is_healthy`. |
+| **Diagnosis** | API JSON: `plant_name`, `disease_name`, `symptoms_matched`, `solution`, `confidence_note`, `is_healthy`, `treatment_type`, optional `treatment_steps`. |
 | **Knowledge Base** | MySQL `plants` and `diseases` tables, filled from CSV seeding. |
 | **RAG** | Retrieve-Augment-Generate: Vision → find candidates in KB → AI synthesis using those records when relevant. |
 | **Vision Analysis** | NVIDIA NIM step: image → text (plant guess, symptoms, morphology). |
@@ -305,6 +306,7 @@ Pre-seeded device, known demo photo (once stakeholder names must-pass pairs — 
 | **Plant-name match** | Candidate found because vision text matches plant `name` or `common_names`. Maps to **High** confidence tier. |
 | **Symptom-pattern match** | Candidate found because vision symptoms align with a disease’s `symptoms` or `disease_name` **across any plant**. Maps to **Medium** confidence tier. |
 | **Confidence tier** | High / Medium / Low classification of every diagnosis; communicated via `confidence_note` and Results UX. |
+| **Treatment type** | Per diagnosis: `single_action` (one done-when-done instruction in `solution`) or `care_plan` (3–5 `{ day, action }` steps in `treatment_steps`). Chosen from the actual problem, not a default template. |
 | **Query** | Server-side audit row (`queries` table); not shown in mobile UI in MVP. |
 | **Unidentified Issue** | Low-tier soft outcome: system could not confidently identify the issue; intentionally conservative; user still gets safe, actionable general guidance. Valid product outcome — not an error. |
 
@@ -312,7 +314,7 @@ Pre-seeded device, known demo photo (once stakeholder names must-pass pairs — 
 
 ## 5. Features
 
-**FR-1–FR-18 — all requirements and testable consequences below.**
+**FR-1–FR-19 — all requirements and testable consequences below.**
 
 ---
 
@@ -430,6 +432,7 @@ Retrieval uses **both**:
 - Medium and Low tier responses are never mistakable for a High-tier KB-grounded plant-specific answer.
 - Low-tier responses never claim species-specific certainty.
 - Species-specific treatments only when High tier (plant identification confidence sufficiently high).
+- **Treatment shape (FR-19):** Synthesis **must** set `treatment_type` from the actual problem (`single_action` vs `care_plan`). Do not default every issue to a generic multi-step paragraph. Applies to High, Medium, and Low tiers.
 - **Active path:** When `OPENAI_API_KEY` is set → OpenAI Chat Completions with **`response_format: json_schema`** matching `DiagnosisResult`; model **`gpt-4o`** (D-8).
 - **Fallback:** On OpenAI failure or missing key → NVIDIA NIM text (`meta/llama-3.1-8b-instruct`), up to **2 retries**, **25s** timeout per attempt.
 - **NVIDIA fallback validation:** Fallback path must be **deliberately tested end-to-end before the stakeholder demo** (not assumed because code exists). Same Demo Acceptance Criteria as primary path. Pre-demo checklist item.
@@ -464,10 +467,32 @@ Retrieval uses **both**:
 #### FR-10: Diagnosis display
 
 **Consequences (testable):**
-- Renders: plant name, disease/issue, symptoms matched, solution, confidence note.
+- Renders: plant name, disease/issue, symptoms matched, recommended action (per FR-19), confidence note.
 - Uses UPAVANA palette (e.g. background `#F7FAF8`, primary `#003A33`, CTA `#FE8D10`).
-- Long solution text scrolls.
+- **P6:** Status framing is a **plain result**, not an alert banner. No ⚠️. Non-healthy copy is not “Issue Detected” (see FR-12).
+- `single_action` and `care_plan` are **visually distinct** (short instruction vs day-labeled list).
+- Long care-plan text scrolls.
 - Confidence tier is visible via `confidence_note` (and any UX treatment distinguishing High vs Medium vs Low).
+
+#### FR-19: Problem-based treatment structure
+
+Expands FR-7 (synthesis) and FR-10 (display). **Not** every problem gets the same generic multi-step checklist.
+
+The model decides, per diagnosis, whether the fix is:
+
+| `treatment_type` | When | Fields |
+|------------------|------|--------|
+| `single_action` | One thing to do, then done (e.g. move to indirect light) | `solution` = one clear, short instruction. `treatment_steps` omitted or empty. |
+| `care_plan` | Genuinely needs monitoring or repeated action over days (e.g. repeated neem oil) | `treatment_steps`: ordered list of `{ "day": string, "action": string }`, **3–5 steps maximum**, concise — not exhaustive. `solution` may be a one-line summary of the plan. |
+
+**Consequences (testable):**
+- Synthesis prompt (all providers that emit `DiagnosisResult`) instructs the model to **choose** `treatment_type` from the problem; it must not always emit a multi-step essay.
+- JSON includes `treatment_type`: `"single_action"` or `"care_plan"`.
+- When `care_plan`, `treatment_steps` has 3–5 `{ day, action }` objects.
+- When `single_action`, Results shows one short instruction; when `care_plan`, a numbered or day-labeled list — visually distinct.
+- High, Medium, and Low tiers all use this structure (Low still uses general, honestly labeled guidance).
+- Healthy outcomes may use `single_action` (e.g. continue current care).
+- Clients ignore unknown extra fields (`@JsonIgnoreProperties` / equivalent) so older apps do not crash before they ship FR-19 UI.
 
 #### FR-11: Healthy plant UX
 
@@ -476,31 +501,33 @@ Retrieval uses **both**:
 - Green celebratory styling; never shown as error or empty state (P4).
 - Mobile `DiagnosisData` includes `is_healthy` from API.
 
-#### FR-12: Issue-detected and Unidentified Issue UX (standardized)
+#### FR-12: Diagnosis result and Unidentified Issue UX (standardized)
 
-**High / Medium issue states:** Non-healthy uses warning styling (amber accents per design system). Confidence note in subdued footer style. Medium must be visually/textually distinguishable from High — never mistakable for plant-confirmed KB grounding.
+**P6 applies to all non-healthy and Low-tier states.** Do not use warning/danger alert patterns.
+
+**High / Medium issue states:** Non-healthy uses a **calm result** framing (UPAVANA surface/cards; may use soft amber only as a quiet accent, not an alarm). No ⚠️. Headline is a plain diagnosis result (plant + issue), not “Issue Detected.” Confidence note in subdued footer style. Medium must be visually/textually distinguishable from High — never mistakable for plant-confirmed KB grounding.
 
 **Low tier — Unidentified Issue (locked experience):**
 
-Implements P1 (honest uncertainty) and P5 (valid outcome, not error).
+Implements P1 (honest uncertainty), P5 (valid outcome, not error), and **P6 (calm, not alarming)**.
 
 | Element | Locked behavior / copy intent |
 |---------|-------------------------------|
 | **Outcome** | `disease_name` = **Unidentified Issue**; `is_healthy` = `false` |
 | **Message** | System **could not confidently identify** the issue |
-| **Framing** | Diagnosis is **intentionally conservative**, not speculative — better to say we don’t know than invent a disease |
-| **Action** | User still receives **safe, actionable** general guidance in `solution` |
+| **Framing** | Diagnosis is **intentionally conservative**, not speculative — better to say we don’t know than invent a disease. Tone is supportive, never a danger alert. |
+| **Action** | User still receives **safe, actionable** guidance via FR-19 (`single_action` or short `care_plan`) |
 | **Labeling** | Must state guidance is **not** from curated research yet (align with FR-7 Low-tier example) |
-| **UI** | Issue styling (not Error screen); reassuring, helpful — not “we cannot help you” |
-| **Never** | Fabricated disease name; species-specific treatment certainty; presentation as a hard failure |
+| **UI** | Calm result styling (not Error screen); reassuring, helpful — not “we cannot help you”; **no** ⚠️ / “Issue Detected” |
+| **Never** | Fabricated disease name; species-specific treatment certainty; presentation as a hard failure or warning banner |
 
-**Canonical Low-tier guidance pattern (solution / confidence_note):**
+**Canonical Low-tier guidance pattern (`solution` / `confidence_note`):**
 
 > We couldn’t confidently identify this issue from our curated research, so we’re being cautious rather than guessing. Here’s general guidance: [safe next steps]. If this looks urgent, consider consulting a local nursery or plant expert.
 
 **Consequences (testable):**
-- Non-healthy uses warning styling (amber accents per design system).
-- **`Unidentified Issue`** uses issue styling but copy is **reassuring and helpful** — general guidance in `solution`, not “we cannot help you.”
+- Non-healthy Results **do not** show ⚠️ or the string “Issue Detected.”
+- **`Unidentified Issue`** uses calm result styling; copy is **reassuring and helpful** — FR-19 treatment, not “we cannot help you.”
 - Confidence note in subdued footer style.
 - Low-tier copy communicates: could not confidently identify; intentionally conservative; safe actionable guidance remains.
 - Medium and Low never look like High-tier plant-confirmed KB answers.
@@ -627,9 +654,9 @@ See §6. Each deferred item should name **why** (simplicity) and **what stays op
 
 | ID | Metric | Validates |
 |----|--------|-----------|
-| **SM-1** | Stakeholder completes UJ-3 (must-pass photo → KB-grounded solution) without dev help, &lt; 3 min | FR-3,5,6,7,10; DAC-1, DAC-5 |
+| **SM-1** | Stakeholder completes UJ-3 (must-pass photo → KB-grounded solution) without dev help, &lt; 3 min | FR-3,5,6,7,10,19; DAC-1, DAC-5 |
 | **SM-2** | Healthy photo → positive Healthy UX | FR-11; DAC-2 |
-| **SM-3** | Week-1 end-to-end on device | FR-1–10 minimum |
+| **SM-3** | Week-1 end-to-end on device | FR-1–12,19 minimum |
 
 ### 8.3 Secondary
 
@@ -639,7 +666,7 @@ See §6. Each deferred item should name **why** (simplicity) and **what stays op
 | **SM-5** | Symptom-pattern retrieval surfaces relevant disease when plant misidentified (Medium tier) | FR-6,7 |
 | **SM-6** | Timeout/network → Error + retry | FR-14,15 |
 | **SM-7** | Disclaimer visible on Results | FR-18 |
-| **SM-8** | UPAVANA visual consistency on four screens | FR-10, UX spec |
+| **SM-8** | UPAVANA visual consistency on four screens; Results honor P6 (no alert banner) | FR-10, FR-12, UX spec |
 | **SM-9** | NVIDIA fallback E2E passes DAC-1–DAC-4 before stakeholder demo | FR-7; DAC-6 |
 
 ### Counter-metrics (do not optimize)
@@ -697,6 +724,16 @@ See §6. Each deferred item should name **why** (simplicity) and **what stays op
 | **OQ-3** | Unmatched plant: **soft Unidentified Issue** + general guidance | 2026-08-08 | `[ACTIVE]` |
 | **OQ-4** | Disclaimer copy per FR-18 | 2026-08-08 | `[ACTIVE]` |
 | **OQ-7** | `gpt-4o` vs `gpt-4o-mini` | 2026-08-11 | `[ACTIVE]` Resolved → D-8 (`gpt-4o`) |
+| **P6 / FR-19** | Calm diagnosis UX + `treatment_type` / `treatment_steps` contract | 2026-08-29 | `[ACTIVE]` AD-2/AD-7 and UX spines adopted; Results code still lags |
+
+#### 9.3.4 Calm tone + treatment shape (2026-08-29)
+
+| | |
+|---|---|
+| **Changed** | Product principle **P6**; FR-12 no longer uses warning-alert Results patterns; **FR-19** problem-based `treatment_type` / `treatment_steps` |
+| **Why** | Live testing: ⚠️ / “Issue Detected” felt alarming; Recommended Action was always an undifferentiated multi-step paragraph |
+| **Unchanged** | Confidence tiers; P1–P5; Unidentified Issue as a valid outcome (P5); D-7/D-8 target stack |
+| **Follow-up** | Architecture **AD-2 / AD-7** and UX spines adopted 2026-08-29. Implement Results + `DiagnosisResult` in a later story. |
 
 #### 9.3.3 Runtime default DeepSeek (2026-08-27) — **not a D-7/D-8 reversal**
 
@@ -727,6 +764,8 @@ See §6. Each deferred item should name **why** (simplicity) and **what stays op
 ### 9.4 Architecture follow-up (Gate 3)
 
 `[ACTIVE]` AD-6 updated for OpenAI synthesis. `[OPEN]` AD-3/AD-4 spine text still plant-only — **FR-6 / D-4 supersedes**; align at Gate 3. Also document confidence tiers and NVIDIA fallback E2E validation requirement.
+
+`[DONE — 2026-08-29]` **AD-2 and AD-7** include `treatment_type` / `treatment_steps` (FR-19) and ignore-unknown compat. **UX spines updated:** Results calm framing (P6) and distinct `single_action` vs `care_plan` layouts in `DESIGN.md` / `EXPERIENCE.md`. Live `ResultsScreen.tsx` still lags.
 
 ---
 
@@ -769,7 +808,7 @@ See §6. Each deferred item should name **why** (simplicity) and **what stays op
 | **Security** | Secrets via env only; `.env` gitignored; no PII; admin seed not on public internet |
 | **Reliability** | Pre-seed KB after OQ-1; pre-test photos; fallback images; NVIDIA fallback E2E before demo |
 | **Platform** | Expo ~54, TS strict; Java 21, Spring Boot 4.0, MySQL 8, Flyway only — per `project-context.md` |
-| **Aesthetic** | UPAVANA warm/organic; celebrate healthy; calm Unidentified Issue — `DESIGN.md`; Product Principles P1–P5 |
+| **Aesthetic** | UPAVANA warm/organic; celebrate healthy (P4); calm diagnosis and Unidentified Issue (P6) — `DESIGN.md`; Product Principles P1–P6 |
 
 ---
 
@@ -787,7 +826,7 @@ Pipeline works. Stakeholder needs demo within one month. Gate 1 approved; Gate 2
 | **Confidentiality** | RAG in-system only; no raw KB export |
 | **Stack** | Java Spring Boot + React Native + MySQL — no change without approval (`AGENTS.md`) |
 | **BMAD** | No Gate 3+ new scope without approved PRD + architecture; Gate 3 blocked on OQ-1 |
-| **Trust** | Product Principles P1–P5; no unverified KB auto-ingest |
+| **Trust** | Product Principles P1–P6; no unverified KB auto-ingest |
 
 ---
 
@@ -797,11 +836,11 @@ Pipeline works. Stakeholder needs demo within one month. Gate 1 approved; Gate 2
 |-------------|----------------|
 | Take photo | FR-1, FR-3 |
 | See loading tips | FR-4 |
-| Get diagnosis | FR-5,6,7,9 |
-| High-tier KB-grounded solution | FR-6,7, SM-1, DAC-1 |
+| Get diagnosis | FR-5,6,7,9,19 |
+| High-tier KB-grounded solution | FR-6,7,19, SM-1, DAC-1 |
 | Medium-tier symptom match | FR-6,7, SM-5 |
 | Healthy plant | FR-7,11, SM-2, DAC-2 |
-| Low-tier Unidentified | FR-7,12, OQ-3, DAC-3 |
+| Low-tier Unidentified | FR-7,12,19, OQ-3, DAC-3 |
 | Species-specific only if High | FR-7, DAC-4 |
 | Disclaimer | FR-18, SM-7 |
 | Error retry | FR-14,15 |
@@ -817,6 +856,7 @@ Pipeline works. Stakeholder needs demo within one month. Gate 1 approved; Gate 2
 - [ ] Test photos for each must-pass pair verified on primary (OpenAI `gpt-4o`) path
 - [ ] Healthy test images verified → Healthy, never disease
 - [ ] Low-confidence photo verified → Unidentified Issue + locked copy
+- [ ] Results: no ⚠️ / “Issue Detected”; `single_action` vs `care_plan` visually distinct (FR-19 / P6)
 - [ ] **NVIDIA fallback path** forced/tested E2E — passes DAC-1–DAC-4
 - [ ] Stakeholder dry-run without developer assistance (DAC-5)
 - [ ] Disclaimer visible on Results

@@ -44,7 +44,7 @@ public final class EnvFileLoader {
 				applied++;
 			}
 		}
-		log.info("Loaded {} keys from {} into system properties (existing OS env vars were not overwritten)",
+		log.info("Loaded {} keys from {} into system properties (file values win over stale OS env for Spring)",
 				applied, file.toAbsolutePath());
 	}
 
@@ -65,14 +65,22 @@ public final class EnvFileLoader {
 		}
 		String key = line.substring(0, eq).trim();
 		String value = stripQuotes(line.substring(eq + 1).trim());
-		if (!StringUtils.hasText(key)) {
-			return false;
-		}
-		if (StringUtils.hasText(System.getenv(key)) || StringUtils.hasText(System.getProperty(key))) {
+		if (!StringUtils.hasText(key) || !StringUtils.hasText(value)) {
 			return false;
 		}
 		System.setProperty(key, value);
 		return true;
+	}
+
+	static boolean isConfiguredValue(String value) {
+		if (!StringUtils.hasText(value)) {
+			return false;
+		}
+		String lower = value.trim().toLowerCase();
+		if (lower.contains("your_") && lower.contains("_here")) {
+			return false;
+		}
+		return !"changeme".equals(lower) && !"replace_me".equals(lower);
 	}
 
 	private static String stripQuotes(String value) {

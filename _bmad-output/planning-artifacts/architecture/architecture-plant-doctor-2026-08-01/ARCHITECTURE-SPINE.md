@@ -8,7 +8,7 @@ scope: Plant Doctor MVP — mobile client, Spring Boot API, RAG diagnosis pipeli
 status: approved-verbal
 gate: Gate 3 — verbally approved by stakeholder 2026-08-22 (tech stack backbone confirmed: Java/Spring Boot/MySQL; NVIDIA vision unchanged; OpenAI gpt-4o synthesis per D-7/D-8). Formal written sign-off pending.
 created: 2026-08-01
-updated: 2026-08-22
+updated: 2026-08-29
 sir_read: TECHNICAL-PICTURE.md — one page; this spine is for builders
 resolved:
   - D-1
@@ -41,6 +41,7 @@ binds:
   - FR-16
   - FR-17
   - FR-18
+  - FR-19
 sources:
   - _bmad-output/planning-artifacts/prds/prd-plant-doctor-2026-08-01/prd.md
   - _bmad-output/planning-artifacts/prds/prd-plant-doctor-2026-08-01/addendum.md
@@ -102,9 +103,16 @@ flowchart LR
 
 ### AD-2 — Diagnosis API contract
 
-- **Binds:** FR-3, FR-9, FR-10
-- **Prevents:** Breaking mobile integration; camelCase/snake_case drift
-- **Rule:** `POST /api/diagnose` accepts `multipart/form-data` field **`image`**. Success body is snake_case `Diagnosis`: `plant_name`, `disease_name`, `symptoms_matched`, `solution`, `confidence_note`, `is_healthy`. Errors: `{ "error": "<message>" }` with HTTP 400 or 500. Mobile `DiagnosisData` mirrors this including `is_healthy`. [ADOPTED]
+- **Binds:** FR-3, FR-9, FR-10, FR-19
+- **Prevents:** Breaking mobile integration; camelCase/snake_case drift; two clients inventing different treatment JSON
+- **Rule:** `POST /api/diagnose` accepts `multipart/form-data` field **`image`**. Success body is snake_case `DiagnosisResult`: `plant_name`, `disease_name`, `symptoms_matched`, `solution`, `confidence_note`, `is_healthy`, `treatment_type`, optional `treatment_steps`. Errors: `{ "error": "<message>" }` with HTTP 400 or 500.
+- **`treatment_type`:** JSON strings exactly `"single_action"` or `"care_plan"` (lowercase snake). Store as strings (or `@JsonValue` if an enum). Never serialize Java enum names like `SINGLE_ACTION`.
+- **UI switch:** Render from `treatment_type`, not from whether `treatment_steps` is truthy.
+- **`treatment_steps`:** JSON array of objects `{ "day": string, "action": string }`. `day` and `action` are **strings** (not numbers). `day` is a short label (e.g. `"Day 1"`), not a schema-enforced calendar date.
+- **`single_action`:** `solution` is one short instruction. `treatment_steps` is omitted or `null` — **not** `[]`.
+- **`care_plan`:** `treatment_steps` has **3–5** items. `solution` is a one-line summary only; the ordered actions live in `treatment_steps`, not a second checklist in `solution`. Count outside 3–5 → incomplete result (retry/fallback), do not clamp.
+- **Compat:** Additive fields. Java `DiagnosisResult` and mobile parsers keep `@JsonIgnoreProperties(ignoreUnknown = true)` / equivalent so **older clients ignore unknown keys**. Missing `treatment_type` from a lagging producer is **not** filled with a care plan — consumers use `solution` as a single instruction. Mobile `DiagnosisData` mirrors the contract (new fields optional until the app ships FR-19 UI).
+- [ADOPTED — revised 2026-08-29; FR-19]
 
 ### AD-3 — Dual RAG retrieval
 
@@ -142,8 +150,8 @@ flowchart LR
 
 ### AD-7 — Synthesis output + confidence tiers
 
-- **Binds:** FR-7, FR-10, FR-11, FR-12
-- **Prevents:** Unparseable AI output; High-tier copy on Medium/Low matches
+- **Binds:** FR-7, FR-10, FR-11, FR-12, FR-19
+- **Prevents:** Unparseable AI output; High-tier copy on Medium/Low matches; every problem getting the same multi-step essay
 - **Rule:** Output matches `DiagnosisResult`. Strip markdown fences via `extractJson()` before deserialize. `@JsonIgnoreProperties(ignoreUnknown = true)`.
   | Tier | Trigger | Output |
   |------|---------|--------|
@@ -151,7 +159,10 @@ flowchart LR
   | **Medium** | Symptom-pattern only | May use matched disease/solution; `confidence_note` must say plant type was **not** confirmed in KB |
   | **Low** | No candidates | `Unidentified Issue`; labeled general guidance; no species-specific certainty |
   | **Healthy** | No disease | `disease_name` `Healthy`, `is_healthy: true` |
-- Every diagnosis sets `confidence_note` with High / Medium / Low (or healthy). [ADOPTED — revised 2026-08-14]
+- Every diagnosis sets `confidence_note` with High / Medium / Low (or healthy).
+- **Treatment shape (all tiers, including Healthy and Low):** The model **chooses** `treatment_type` from the actual problem. It must not default every issue to a generic multi-step checklist, and must not default every issue to `single_action`. `care_plan` only when the problem genuinely needs repeated or multi-day care; then `treatment_steps` is 3–5 `{ day, action }` items, concise. `single_action` when one done-when-done step suffices; then `solution` is that step and `treatment_steps` is omitted/empty.
+- **Schema / prompts:** OpenAI `json_schema` and every `NvidiaClientService` synthesis method describe `treatment_type` and `treatment_steps` (`day`/`action` typed as strings). Under strict `json_schema`, declare `treatment_steps` as a **nullable** array so the model can emit `null` for `single_action` without inventing steps. Persist the full JSON in `queries.result_json`.
+- [ADOPTED — revised 2026-08-29; FR-19]
 
 ### AD-8 — Schema evolution via Flyway
 
@@ -206,7 +217,7 @@ flowchart LR
 | **State mutation** | Diagnosis is stateless per request. Query row on success only. KB mutated only via seed (transactional). |
 | **Logging** | SLF4J; log vision/synthesis attempts and durations; never log API keys or image bytes. |
 | **Config** | `application.yml` defaults; env overrides. Run backend from `backend/` so CSV paths resolve. |
-| **UI palette** | Greens on `#F5F8F5`; healthy = green; issue = amber; error = warm red tint. |
+| **UI palette** | Greens on `#F5F8F5`; healthy = green (P4). Issue chrome is a **calm result** (P6), not an alert banner. Error = warm red tint. |
 
 ## Stack
 
@@ -304,6 +315,7 @@ flowchart TB
 | Query persistence (FR-8) | `DiagnosisService` + `QueryRepository` | AD-5, AD-13 |
 | API errors (FR-9) | `DiagnoseController` | AD-2 |
 | Results / Unidentified Issue / disclaimer (FR-10–FR-13, FR-18) | `ResultsScreen.tsx` | AD-2, AD-7 |
+| Treatment shape (FR-19) | `DiagnosisResult` + synthesis schema/prompts + Results render | AD-2, AD-7 |
 | Error UI (FR-14, FR-15) | `ErrorScreen.tsx` | AD-2, AD-12 |
 | CSV seeding (FR-16, FR-17) | `PlantDiseaseSeedService` | AD-8, AD-9 |
 
@@ -312,6 +324,7 @@ flowchart TB
 | Item | Reason |
 | --- | --- |
 | **Wire OpenAI on `diagnosePlant()`** | Target stack is D-7/D-8; code still calls DeepSeek. Next implementation story after Gate 3 consent. |
+| **Ship FR-19 fields in code** | Spine contract is ADOPTED; `DiagnosisResult.java`, `diagnosisResultJsonSchema()`, synthesis prompts, and `DiagnosisData` still omit `treatment_type` / `treatment_steps` as of 2026-08-29. |
 | **User authentication** | Post-MVP; AD-10 |
 | **Follow-up chat + gpt-4o-mini** | Post-MVP; mini not on diagnosis |
 | **Production deployment / CI** | Demo is local LAN |
