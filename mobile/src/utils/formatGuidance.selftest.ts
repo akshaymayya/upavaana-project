@@ -1,4 +1,4 @@
-import { parseInlineBold, splitGuidanceLines } from './formatGuidance.ts';
+import { parseInlineBold, splitGuidanceLines } from './formatGuidance';
 
 function assert(cond: unknown, msg: string): void {
 	if (!cond) {
