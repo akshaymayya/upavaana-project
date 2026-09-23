@@ -1,3 +1,3 @@
-# Expo HAS CHANGED
+# Expo
 
-Read the exact versioned docs at https://docs.expo.dev/versions/v57.0.0/ before writing any code.
+This app is Expo **~54** (`mobile/package.json`). Read the matching docs at https://docs.expo.dev/versions/v54.0.0/ before writing mobile code.

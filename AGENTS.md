@@ -13,18 +13,18 @@ See project rules in chat / this file for phase order and constraints.
 
 ## Tech stack
 
-- Frontend: React Native
+- Frontend: React Native (Expo in `mobile/`)
 - Backend: Java, Spring Boot (`backend/`)
 - Database: MySQL
-- AI: OpenAI (`gpt-4o-mini` for chat/light tasks; `gpt-4o` + JSON schema for final diagnosis)
+- AI (live code): NVIDIA NIM vision (`analyzeImage`). Synthesis is selected by `ACTIVE_SYNTHESIS_PROVIDER`: `groq`, `openai` (gpt-4o), or `deepseek` (NVIDIA-hosted DeepSeek using `NVIDIA_API_KEY`). All synthesis paths fall back to NVIDIA NIM text. See `DiagnosisService` and `NvidiaClientService`.
 
 ## Phases
 
-1. Backend skeleton — **current**
-2. Data seeding — **current**
-3. `/api/diagnose`
-4. Frontend core flow
-5. Follow-up chat
+1. Backend skeleton — **done**
+2. Data seeding — **done**
+3. `/api/diagnose` — **done**
+4. Frontend core flow — **in progress**
+5. Follow-up chat — **not started**
 6. Polish
 
 Full API contract, schema, and screen list are in the initial project brief (conversation / duplicate in repo as needed).
