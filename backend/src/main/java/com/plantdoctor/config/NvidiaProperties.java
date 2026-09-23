@@ -9,10 +9,6 @@ public class NvidiaProperties {
 	private String baseUrl = "https://integrate.api.nvidia.com/v1";
 	private String visionModel = "meta/llama-3.2-11b-vision-instruct";
 	private String textModel = "openai/gpt-oss-20b";
-	/** Bound so old .env files still start; not used for HTTP. */
-	private String deepseekApiKey;
-	private String deepseekBaseUrl = "https://api.deepseek.com/v1";
-	private String deepseekModel = "deepseek-v4-flash";
 	private String deepseekNimModel = "deepseek-ai/deepseek-v4-pro-0813";
 
 	public String getApiKey() { return apiKey; }
@@ -26,15 +22,6 @@ public class NvidiaProperties {
 
 	public String getTextModel() { return textModel; }
 	public void setTextModel(String textModel) { this.textModel = textModel; }
-
-	public String getDeepseekApiKey() { return deepseekApiKey; }
-	public void setDeepseekApiKey(String deepseekApiKey) { this.deepseekApiKey = deepseekApiKey; }
-
-	public String getDeepseekBaseUrl() { return deepseekBaseUrl; }
-	public void setDeepseekBaseUrl(String deepseekBaseUrl) { this.deepseekBaseUrl = deepseekBaseUrl; }
-
-	public String getDeepseekModel() { return deepseekModel; }
-	public void setDeepseekModel(String deepseekModel) { this.deepseekModel = deepseekModel; }
 
 	public String getDeepseekNimModel() { return deepseekNimModel; }
 	public void setDeepseekNimModel(String deepseekNimModel) { this.deepseekNimModel = deepseekNimModel; }
