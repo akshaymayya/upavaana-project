@@ -7,7 +7,6 @@ public class OpenAiProperties {
 
 	private String apiKey;
 	private String baseUrl = "https://api.openai.com/v1";
-	private String model = "gpt-4o";
 
 	public String getApiKey() {
 		return apiKey;
@@ -23,13 +22,5 @@ public class OpenAiProperties {
 
 	public void setBaseUrl(String baseUrl) {
 		this.baseUrl = baseUrl;
-	}
-
-	public String getModel() {
-		return model;
-	}
-
-	public void setModel(String model) {
-		this.model = model;
 	}
 }

@@ -51,14 +51,6 @@ public class DiagnosisProperties {
 		return normalizeProvider(chosen);
 	}
 
-	public boolean useOpenAi() {
-		return PROVIDER_OPENAI.equals(resolvedProvider());
-	}
-
-	public boolean useGroq() {
-		return PROVIDER_GROQ.equals(resolvedProvider());
-	}
-
 	@Nullable
 	private String environmentValue(String key) {
 		if (environment == null) {
