@@ -41,7 +41,6 @@ const getApiUrl = () => {
     host = stripped.split(':')[0];
   }
   const url = `http://${host}:8080/api/diagnose`;
-  console.log('Diagnosis API URL:', url);
   return url;
 };
 

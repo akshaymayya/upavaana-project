@@ -66,7 +66,8 @@ public class DiagnosisService {
 			}
 
 			String symptomsDescription = nvidiaClientService.analyzeImage(imageBytes, contentType);
-			log.info("Vision analysis result: {}", symptomsDescription);
+			log.info("Vision analysis received ({} chars)",
+					symptomsDescription == null ? 0 : symptomsDescription.length());
 
 			List<DiseaseCandidate> candidateDiseases = findCandidateDiseases(symptomsDescription);
 
