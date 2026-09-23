@@ -24,8 +24,13 @@
   summary: Stacked vision + NIM (90s) + NVIDIA text retries can exceed the mobile 180s abort.
   evidence: Review of RestTemplate timeouts vs pipeline budget; pre-existing 180s client cap.
 
-- source_spec: `_bmad-output/implementation-artifacts/spec-synthesis-reliability.md`
-  summary: NVIDIA text fallback still uses a separate prompt stack and does not check isCompleteDiagnosis.
-  evidence: Pre-existing synthesizeDiagnosis path; spec required reusing synthesis prompts on primaries only.
+- source_spec: `_bmad-output/implementation-artifacts/spec-diagnosis-priority-formatted-solution.md`
+  summary: Synthesis still has no post-parse check that solution is newline-separated or that disease_name was not blended.
+  evidence: Review — isCompleteDiagnosis only requires a non-empty solution string; enforcement is prompt-only.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-diagnosis-priority-formatted-solution.md`
+  summary: formatGuidance.selftest.ts is not wired into mobile package.json scripts/CI.
+  evidence: Parser tests run only via manual node --experimental-strip-types.
+
 
 

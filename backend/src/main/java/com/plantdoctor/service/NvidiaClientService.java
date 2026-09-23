@@ -39,6 +39,59 @@ public class NvidiaClientService {
 
 	private static final String GPT_4O = "gpt-4o";
 
+	static final String VISION_ANALYSIS_PROMPT =
+			"You are an expert plant pathologist and botanist. Analyze the uploaded photo carefully.\n\n" +
+			"First describe LEAF MORPHOLOGY before naming the plant:\n" +
+			"- Leaf shape (oval, lanceolate, lobed, compound, etc.)\n" +
+			"- Edge/margin (smooth, serrated, wavy)\n" +
+			"- Texture (thick/succulent, thin, leathery, fuzzy)\n" +
+			"- Venation pattern if visible\n" +
+			"- Growth habit clues (woody shrub/tree branch, herbaceous stem, vine, succulent rosette)\n\n" +
+			"Then give your best plant identification. Do not default a single palmate/lobed ornamental leaf to rose. " +
+			"Broad palmate leaves with 3–5 lobes and a toothed margin are often hibiscus (or similar mallow); rose leaflets are usually smaller and pinnately compound. " +
+			"If uncertain, say so honestly — e.g. " +
+			"\"possibly hibiscus or another woody ornamental with palmate leaves\" — " +
+			"rather than confidently guessing a poor match like lettuce or rose for the wrong leaf type.\n\n" +
+			"SMALL-SCALE DAMAGE (required scan):\n" +
+			"- Look carefully across the entire visible leaf surface of every leaf in frame — not only large, obvious symptoms.\n" +
+			"- Search for small holes, pinholes, chew marks, ragged edges, stippling, or other minor pest/mechanical damage, even if only a few marks on one leaf.\n" +
+			"- If multiple leaves or plants are visible, examine each visible leaf individually. Report findings per leaf (or say which leaves look clear vs damaged). Do not give one blanket \"the plant looks healthy\" summary while skipping leaves.\n" +
+			"- Do not conclude healthy / no disease / no pests unless you have actually scanned for this small-scale damage. Large clean areas do not prove the photo is healthy if you have not inspected margins and the rest of the visible surface.\n\n" +
+			"Finally list all visible symptoms in detail (color, pattern, location on leaf): " +
+			"spots, lesions, halos, yellowing, wilting, mold, pests, small holes, chew marks, etc.\n\n" +
+			"Write a cohesive description covering morphology, plant guess (with uncertainty if needed), per-leaf or per-region findings, and symptoms.";
+
+	static final String SYNTHESIS_EVIDENCE_AND_FORMAT =
+			"COMMIT: One disease_name only. Do not blend two theories into disease_name or as equal-weight steps in solution.\n" +
+			"EVIDENCE WEIGHT: Specific unambiguous vision (holes, chew marks, visible insects, ragged chewing) outranks generic multi-cause signs (yellowing, wilting). " +
+			"If both are present, they DISAGREE — pick the pest/chew diagnosis and treatment. Do not treat yellowing as a second equal cause. " +
+			"Do not copy a wilt/fertilizer/pH DB essay as the main plan when vision shows chewing/holes. Weaker alternatives belong only in confidence_note.\n" +
+			"SOLUTION FORMAT: Lead with one clear sentence for the primary action. Put real newline characters between steps inside the JSON string (not a single paragraph). Wrap the key treatment phrase in double asterisks, e.g. **neem oil spray**. " +
+			"If disease_name is Healthy, keep solution short (continue current care) with no pest lead. Do not wrap the JSON object in markdown fences.\n";
+
+	static final String SYNTHESIS_SYSTEM_PROMPT =
+			"You are a world-class plant pathologist and botanist with deep expertise in plant diseases, pests, and treatments.\n" +
+			"Your job is to produce an accurate, actionable plant diagnosis in strict JSON format.\n\n" +
+			"STRICT RULES:\n" +
+			"1. PLANT NAME: Always take the plant name from the Vision Analysis. Never rename or guess a different plant.\n" +
+			"2. PLANT_NAME_MATCH records: Use when both the plant and symptoms align with the Vision Analysis. Base treatment on the DB solution.\n" +
+			"3. SYMPTOM_PATTERN_MATCH records: The DB plant may differ from the photographed plant. If symptoms closely match, you MAY diagnose using that disease name and solution. " +
+			"In confidence_note, explain that symptoms are consistent with this disease pattern seen across many species, but the exact plant type was not confirmed in our database.\n" +
+			"4. NO DB MATCH: If no record fits, set disease_name to 'Unidentified Issue', is_healthy to false, and give generic care advice labeled as not from curated research. Never use Healthy as a stand-in for a missing KB row.\n" +
+			"5. HEALTHY PLANT: Set disease_name to 'Healthy' and is_healthy to true ONLY if Vision Analysis reports no visible symptoms at all. If vision describes damage, holes, discoloration, pests, or similar, is_healthy must be false. If symptoms_matched describes an issue, disease_name cannot be Healthy.\n" +
+			"6. OUTPUT: Respond with ONLY a valid raw JSON object. No code fences around the JSON. Double-asterisk bold is required inside solution string values for the key action.\n" +
+			"7. SPECIFIC: disease_name must be a concrete disease or pest when symptoms allow (e.g. chewing pest damage), not vague 'fungal infection'.\n" +
+			"8. " + SYNTHESIS_EVIDENCE_AND_FORMAT + "\n" +
+			"Required JSON fields:\n" +
+			"{\n" +
+			"  \"plant_name\": \"exact plant name from vision analysis\",\n" +
+			"  \"disease_name\": \"disease or pest name, or 'Healthy', or 'Unidentified Issue'\",\n" +
+			"  \"symptoms_matched\": \"specific symptoms you identified from the photo description\",\n" +
+			"  \"solution\": \"primary action then newline-separated short steps with **key phrase**\",\n" +
+			"  \"confidence_note\": \"High/Medium/Low — brief one-sentence reasoning\",\n" +
+			"  \"is_healthy\": false\n" +
+			"}";
+
 	public NvidiaClientService(NvidiaProperties nvidiaProperties, OpenAiProperties openAiProperties,
 			GroqProperties groqProperties) {
 		this.nvidiaProperties = nvidiaProperties;
@@ -83,21 +136,7 @@ public class NvidiaClientService {
 
 		Map<String, Object> textPart = Map.of(
 				"type", "text",
-				"text", "You are an expert plant pathologist and botanist. Analyze the uploaded photo carefully.\n\n" +
-						"First describe LEAF MORPHOLOGY before naming the plant:\n" +
-						"- Leaf shape (oval, lanceolate, lobed, compound, etc.)\n" +
-						"- Edge/margin (smooth, serrated, wavy)\n" +
-						"- Texture (thick/succulent, thin, leathery, fuzzy)\n" +
-						"- Venation pattern if visible\n" +
-						"- Growth habit clues (woody shrub/tree branch, herbaceous stem, vine, succulent rosette)\n\n" +
-						"Then give your best plant identification. Do not default a single palmate/lobed ornamental leaf to rose. " +
-						"Broad palmate leaves with 3–5 lobes and a toothed margin are often hibiscus (or similar mallow); rose leaflets are usually smaller and pinnately compound. " +
-						"If uncertain, say so honestly — e.g. " +
-						"\"possibly hibiscus or another woody ornamental with palmate leaves\" — " +
-						"rather than confidently guessing a poor match like lettuce or rose for the wrong leaf type.\n\n" +
-						"Finally list all visible symptoms in detail (color, pattern, location on leaf): " +
-						"spots, lesions, halos, yellowing, wilting, mold, pests, etc.\n\n" +
-						"Write a single cohesive paragraph covering morphology, plant guess (with uncertainty if needed), and symptoms."
+				"text", VISION_ANALYSIS_PROMPT
 		);
 
 		Map<String, Object> imagePart = Map.of(
@@ -113,7 +152,7 @@ public class NvidiaClientService {
 		Map<String, Object> requestBody = Map.of(
 				"model", nvidiaProperties.getVisionModel(),
 				"messages", List.of(message),
-				"max_tokens", 512
+				"max_tokens", 768
 		);
 
 		int maxAttempts = 2;
@@ -183,16 +222,17 @@ public class NvidiaClientService {
 				"RULE 3 — SYMPTOM PATTERN MATCH: For candidates labeled SYMPTOM_PATTERN_MATCH, the plant in the DB may differ from the photo. " +
 				"If symptoms closely match, you MAY use that disease name and solution. In confidence_note, state that the pattern is consistent across species " +
 				"but the exact plant type could not be confirmed in our database.\n" +
-				"RULE 4 — NO MATCH: If no candidate fits, set disease_name to 'Unidentified Issue', is_healthy to false, and give generic care advice.\n" +
-				"RULE 5 — HEALTHY: If the Vision Analysis shows no disease symptoms, set disease_name to 'Healthy' and is_healthy to true.\n" +
-				"RULE 6 — OUTPUT: Return ONLY a raw JSON object. No markdown, no code fences.\n" +
+				"RULE 4 — NO MATCH: If no candidate fits, set disease_name to 'Unidentified Issue', is_healthy to false, and give generic care advice. Do NOT set Healthy just because the Knowledge Base missed.\n" +
+				"RULE 5 — HEALTHY: Set disease_name to 'Healthy' and is_healthy to true ONLY if Vision Analysis reports no visible symptoms at all (no holes, tears, discoloration, pests, lesions, chew marks). If vision or symptoms_matched describes any issue, disease_name must not be Healthy and is_healthy must be false — use Unidentified Issue when no KB disease fits.\n" +
+				"RULE 6 — OUTPUT: Return ONLY a raw JSON object. No code fences around the JSON.\n" +
+				SYNTHESIS_EVIDENCE_AND_FORMAT +
 				"\n" +
 				"Output JSON fields (all required):\n" +
 				"{\n" +
 				"  \"plant_name\": \"Exact plant name from Vision Analysis\",\n" +
 				"  \"disease_name\": \"Matched disease name, or 'Unidentified Issue', or 'Healthy'\",\n" +
 				"  \"symptoms_matched\": \"Specific symptoms visible in the photo\",\n" +
-				"  \"solution\": \"Actionable, specific treatment steps\",\n" +
+				"  \"solution\": \"Primary action, then newline-separated short steps with **key phrase**\",\n" +
 				"  \"confidence_note\": \"High / Medium / Low + one-sentence reason\",\n" +
 				"  \"is_healthy\": false\n" +
 				"}";
@@ -200,9 +240,9 @@ public class NvidiaClientService {
 		String userPrompt = String.format(
 				"=== Vision Analysis (trust this for plant identification) ===\n%s\n\n" +
 				"=== Candidate Diseases from Database ===\n%s\n\n" +
-				"Apply all rules and return the diagnosis JSON.",
+				"Apply all rules and return the diagnosis JSON.\n" + SYNTHESIS_EVIDENCE_AND_FORMAT,
 				symptomsDescription,
-				diseasesText.isEmpty() ? "(No matching diseases found in database — synthesize your own expert advice)" : diseasesText
+				diseasesText.isEmpty() ? "(No matching diseases found in database. If vision lists symptoms, use Unidentified Issue / is_healthy false — never Healthy.)" : diseasesText
 		);
 
 		Map<String, Object> systemMessage = Map.of(
@@ -248,7 +288,7 @@ public class NvidiaClientService {
 				String rawContent = (String) responseMessage.get("content");
 				String jsonContent = extractJson(rawContent);
 				log.debug("Sanitized raw content from text model: {}", jsonContent);
-				return objectMapper.readValue(jsonContent, DiagnosisResult.class);
+				return deserializeDiagnosis(jsonContent);
 
 			} catch (Exception ex) {
 				lastException = ex;
@@ -343,7 +383,7 @@ public class NvidiaClientService {
 			}
 			String rawContent = (String) msg.get("content");
 			String jsonContent = extractJson(rawContent);
-			DiagnosisResult parsed = objectMapper.readValue(jsonContent, DiagnosisResult.class);
+			DiagnosisResult parsed = deserializeDiagnosis(jsonContent);
 			if (!isCompleteDiagnosis(parsed)) {
 				throw new RuntimeException("OpenAI returned incomplete DiagnosisResult.");
 			}
@@ -420,7 +460,7 @@ public class NvidiaClientService {
 				Map<?, ?> msg = (Map<?, ?>) choice.get("message");
 				String rawContent = openAiStyleMessageText(msg);
 				String jsonContent = extractJson(rawContent);
-				DiagnosisResult parsed = objectMapper.readValue(jsonContent, DiagnosisResult.class);
+				DiagnosisResult parsed = deserializeDiagnosis(jsonContent);
 				if (!isCompleteDiagnosis(parsed)) {
 					throw new RuntimeException("Groq returned incomplete DiagnosisResult.");
 				}
@@ -516,7 +556,7 @@ public class NvidiaClientService {
 			Map<?, ?> msg = (Map<?, ?>) choice.get("message");
 			String rawContent = openAiStyleMessageText(msg);
 			String jsonContent = extractJson(rawContent);
-			DiagnosisResult parsed = objectMapper.readValue(jsonContent, DiagnosisResult.class);
+			DiagnosisResult parsed = deserializeDiagnosis(jsonContent);
 			if (!isCompleteDiagnosis(parsed)) {
 				throw new RuntimeException("NVIDIA-hosted DeepSeek returned incomplete DiagnosisResult.");
 			}
@@ -528,30 +568,7 @@ public class NvidiaClientService {
 	}
 
 	private String synthesisSystemPrompt() {
-		return "You are a world-class plant pathologist and botanist with deep expertise in plant diseases, pests, and treatments.\n" +
-				"Your job is to produce an accurate, actionable plant diagnosis in strict JSON format.\n\n" +
-				"STRICT RULES:\n" +
-				"1. PLANT NAME: Always take the plant name from the Vision Analysis. Never rename or guess a different plant.\n" +
-				"2. PLANT_NAME_MATCH records: Use when both the plant and symptoms align with the Vision Analysis. Base treatment on the DB solution.\n" +
-				"3. SYMPTOM_PATTERN_MATCH records: The DB plant may differ from the photographed plant. If symptoms closely match, you MAY diagnose using that disease name and solution. " +
-				"In confidence_note, explain that symptoms are consistent with this disease pattern seen across many species, but the exact plant type was not confirmed in our database.\n" +
-				"4. NO DB MATCH — USE YOUR KNOWLEDGE: If no record fits, use expert pathology knowledge from the visible symptoms. " +
-				"Set disease_name to 'Unidentified Issue', is_healthy to false, and give generic care advice labeled as not from curated research.\n" +
-				"5. HEALTHY PLANT: If the plant shows no disease symptoms, set disease_name to 'Healthy' and is_healthy to true.\n" +
-				"6. OUTPUT: Respond with ONLY a valid raw JSON object. No markdown, no code fences.\n" +
-				"7. SPECIFIC AND SHORT: disease_name must be a concrete disease or pest when symptoms allow (e.g. powdery mildew), not vague 'fungal infection'. " +
-				"solution must be 4 to 6 short numbered steps (isolate, prune, water change, named treatment type). No essays.\n" +
-				"8. COMMIT TO ONE ANSWER: Pick a single most-likely disease and one treatment plan. Do not hedge 50-50. " +
-				"If a second cause is possible, mention it in one clause of confidence_note only.\n\n" +
-				"Required JSON fields:\n" +
-				"{\n" +
-				"  \"plant_name\": \"exact plant name from vision analysis\",\n" +
-				"  \"disease_name\": \"disease or pest name, or 'Healthy', or 'Unidentified Issue'\",\n" +
-				"  \"symptoms_matched\": \"specific symptoms you identified from the photo description\",\n" +
-				"  \"solution\": \"complete step-by-step actionable treatment plan\",\n" +
-				"  \"confidence_note\": \"High/Medium/Low — brief one-sentence reasoning\",\n" +
-				"  \"is_healthy\": false\n" +
-				"}";
+		return SYNTHESIS_SYSTEM_PROMPT;
 	}
 
 	private String synthesisUserPrompt(String visionDescription, List<DiseaseCandidate> candidateDiseases) {
@@ -563,9 +580,12 @@ public class NvidiaClientService {
 				: "(No matching records found in the database for this plant/symptoms combination.)";
 		String matchGuidance = hasDbMatch
 				? (hasSymptomPatternMatch
-						? "Some records are SYMPTOM_PATTERN_MATCH only. Pick the SINGLE best disease for the vision symptoms. Put that name in disease_name and its treatment in solution. Do not split the answer across two diseases."
-						: "DB records found — use the best PLANT_NAME_MATCH record as primary treatment basis.")
-				: "No DB records — rely entirely on your expert plant pathology knowledge to diagnose and provide treatment.";
+						? "Some records are SYMPTOM_PATTERN_MATCH only. Pick the SINGLE best disease. "
+								+ SYNTHESIS_EVIDENCE_AND_FORMAT
+						: "DB records found — use the best PLANT_NAME_MATCH as primary treatment. "
+								+ SYNTHESIS_EVIDENCE_AND_FORMAT)
+				: "No DB records — if Vision Analysis lists any damage or symptoms, output Unidentified Issue with is_healthy false. Do not output Healthy. "
+						+ SYNTHESIS_EVIDENCE_AND_FORMAT;
 		return String.format(
 				"=== VISION ANALYSIS (what the camera saw) ===\n%s\n\n" +
 				"=== DATABASE RECORDS ===\n%s\n\n" +
@@ -594,6 +614,11 @@ public class NvidiaClientService {
 				"plant_name", "disease_name", "symptoms_matched", "solution", "confidence_note", "is_healthy"));
 		schema.put("additionalProperties", false);
 		return schema;
+	}
+
+	private DiagnosisResult deserializeDiagnosis(String jsonContent) throws Exception {
+		DiagnosisResult parsed = objectMapper.readValue(jsonContent, DiagnosisResult.class);
+		return DiagnosisHealthConsistency.enforce(parsed);
 	}
 
 	private boolean isCompleteDiagnosis(DiagnosisResult parsed) {

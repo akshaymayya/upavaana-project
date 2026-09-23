@@ -85,6 +85,8 @@ public class DiagnosisService {
 				diagnosis = nvidiaClientService.synthesizeDiagnosisWithDeepSeek(symptomsDescription, candidateDiseases);
 			}
 
+			diagnosis = DiagnosisHealthConsistency.enforce(diagnosis);
+
 			String resultJson = objectMapper.writeValueAsString(diagnosis);
 			Query queryRecord = new Query(imageUrl, resultJson);
 			queryRepository.save(queryRecord);
