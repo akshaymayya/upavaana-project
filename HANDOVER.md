@@ -1,7 +1,7 @@
 # UPAVANA Plant Doctor — Developer Handover
 
-**Last updated:** 2026-09-23  
-**Git `main` tip (verified):** `c659296` — pushed to `origin/main`  
+**Last updated:** 2026-09-24  
+**Git `main` tip (verified):** `0627a8d` — pushed to `origin/main`  
 **Audience:** New developer with no project history. BMAD terms are explained on first use.
 
 ---
@@ -23,7 +23,7 @@ The product goal is a trustworthy demo for houseplant owners, grounded in curate
 | **Server & DB** | Implemented | Spring Boot 4, Java 21, Flyway migrations, `GET /api/health` returns DB connectivity + row counts |
 | **Seed KB** | Implemented | `POST /api/admin/seed` reads CSV; `plant-disease-seed-template.csv` ships with **5 sample plant/disease rows** (not an empty template) |
 | **Diagnose** | Implemented | `POST /api/diagnose` multipart field `image` → `DiagnosisService.diagnosePlant()` |
-| **Unit / integration tests** | **Passing on 2026-09-23** | `cd backend && .\mvnw.cmd test` (exit 0). Tests: `DiagnosisServiceTest`, `DiagnosisPropertiesTest`, `EnvFileLoaderTest`, `PlantDoctorApiApplicationTests` |
+| **Unit / integration tests** | **Passing on 2026-09-24** | `cd backend && .\mvnw.cmd test` (exit 0). Includes `DiagnosisHealthConsistencyTest`, `NvidiaClientServiceVisionPromptTest`, `NvidiaClientServiceSynthesisPromptTest`, plus `DiagnosisServiceTest`, `DiagnosisPropertiesTest`, `EnvFileLoaderTest`, `PlantDoctorApiApplicationTests` |
 
 **Important:** Tests **mock** `NvidiaClientService`. They prove routing, retrieval, and persistence—not live calls to NVIDIA, Groq, or OpenAI.
 
@@ -35,7 +35,8 @@ The product goal is a trustworthy demo for houseplant owners, grounded in curate
 | **Session history** | Implemented | In-memory list on Home (lost on app restart); commit `04471ee` |
 | **API URL** | Dynamic | `LoadingScreen` builds `http://{metro-host}:8080/api/diagnose` from Expo host (not hardcoded localhost for devices) |
 | **Client timeout** | 180 seconds | `AbortController` in `LoadingScreen.tsx` |
-| **Automated tests** | **None** | No mobile test suite in repo |
+| **Formatted solution text** | Implemented | `FormattedGuidanceText` + `formatGuidance.ts` (**bold**, line breaks) on Results |
+| **Automated tests** | **None** | No mobile Jest/Detox suite; `formatGuidance.selftest.ts` + `npx tsc --noEmit` |
 
 ### Database / seed data
 
@@ -46,7 +47,7 @@ The product goal is a trustworthy demo for houseplant owners, grounded in curate
 
 Documentation in the PRD and parts of `ARCHITECTURE-SPINE.md` still describe **OpenAI `gpt-4o` as the primary synthesis** path. **That is the stakeholder target (D-7/D-8), not necessarily what runs on your machine.**
 
-**What the Java code does today (`main` @ `c659296`):**
+**What the Java code does today (`main` @ `0627a8d`):**
 
 | Step | Provider | How it is selected |
 |------|----------|-------------------|
@@ -57,10 +58,11 @@ Documentation in the PRD and parts of `ARCHITECTURE-SPINE.md` still describe **O
 | | `openai` | `synthesizeDiagnosisWithOpenAi` — **hardcoded model `gpt-4o`**, needs `OPENAI_API_KEY` |
 | | `deepseek` (default if unset/unknown) | `synthesizeDiagnosisWithDeepSeek` → **NVIDIA-hosted DeepSeek** on `integrate.api.nvidia.com` using **`NVIDIA_API_KEY`** and `DEEPSEEK_NIM_MODEL` — **not** `api.deepseek.com` or OpenRouter |
 | **4. Synthesis fallback** | **NVIDIA NIM text** | `synthesizeDiagnosis()` — model `nvidia.text-model` (default `openai/gpt-oss-20b`) when primary fails or key missing |
+| **5. Post-synthesis** | **`DiagnosisHealthConsistency`** | `enforce()` adjusts healthy vs not when result text conflicts with visible damage cues (merged `f5f6aee`) |
 
 **Repo defaults:** `application.yml` and `backend/.env.example` set `ACTIVE_SYNTHESIS_PROVIDER=deepseek`.
 
-**Confidence tiers (High / Medium / Low):** Requested in synthesis **prompts** inside `NvidiaClientService`; there is **no** separate server-side enforcement layer (no `DiagnosisPipeline` on `main`). The model’s JSON is returned as-is. Mobile shows `confidence_note` and a fixed disclaimer string on Results.
+**Confidence tiers (High / Medium / Low):** Requested in synthesis **prompts** inside `NvidiaClientService` (priority rules for holes/chew vs wilt after merge). There is **no** full `DiagnosisPipeline` on `main`. Mobile shows `confidence_note` and a fixed disclaimer string on Results.
 
 ---
 
@@ -101,10 +103,11 @@ Documentation in the PRD and parts of `ARCHITECTURE-SPINE.md` still describe **O
 
 ### Work **not** on `main` (do not assume it shipped)
 
-| Branch / tag | Contents (from git history; **not** merged to `main`) |
-|--------------|--------------------------------------------------------|
-| `cursor/diagnosis-priority-formatted-solution` (`ebecd2a`) | Formatted solution text, health-consistency helpers, vision prompt tweaks |
-| `backup/pre-rollback-2026-09-02` (`05867e5`, tag on remote) | Large WIP snapshot: Gemini vision routing, `DiagnosisPipeline`, vision evidence normalization, many regression tests, timeout work |
+| Branch / tag | Contents |
+|--------------|----------|
+| `backup/pre-rollback-2026-09-02` (`05867e5`, tag on remote) | Large WIP snapshot: Gemini vision routing, `DiagnosisPipeline`, vision evidence normalization, many regression tests, timeout work — **not** merged |
+
+**Merged to `main` (2026-09-23):** `cursor/diagnosis-priority-formatted-solution` → merge `f5f6aee` (commit `ebecd2a`): synthesis prioritization, `DiagnosisHealthConsistency`, vision/synthesis prompt tests, mobile formatted guidance.
 
 If someone’s local `.env` still has `ACTIVE_VISION_PROVIDER=gemini` or similar, **`main` ignores those keys.**
 
@@ -122,6 +125,9 @@ Chronological **commits on `main`** (abbreviated):
 | 2026-08-29 | `04471ee` | Mobile in-memory diagnosis history |
 | 2026-08-29 | `2b8c5bc` | **Groq** synthesis path; `.env` loading for `ACTIVE_SYNTHESIS_PROVIDER`; faster NIM DeepSeek timeouts |
 | 2026-09-23 | `f9b455a`–`c659296` | Hygiene: remove unused official DeepSeek env bindings; doc alignment with NVIDIA/Groq routing |
+| 2026-09-23 | `f5f6aee` | Merge diagnosis priority + formatted solution (`ebecd2a`) |
+| 2026-09-23 | `1b84383` | Mobile selftest import fix (`tsc --noEmit` clean) |
+| 2026-09-23 | `0627a8d` | Onboarding docs: `HANDOVER.md`, `SYSTEM-OVERVIEW.md`, `DATABASE.md`, `REPO-STRUCTURE.md`, `docs/README.md` |
 
 **Decision themes (PRD §9 — include reversals):**
 
@@ -215,7 +221,7 @@ new/
   backend/                    # Spring Boot API (Plant Doctor)
     src/main/java/com/plantdoctor/
       controller/             # /api/health, /api/diagnose, /api/admin/seed
-      service/                # DiagnosisService, NvidiaClientService, DiagnosisResult
+      service/                # DiagnosisService, NvidiaClientService, DiagnosisHealthConsistency, DiagnosisResult
       config/                 # DiagnosisProperties, Nvidia/Groq/OpenAi props, EnvFileLoader
       seed/                   # CSV import
       entity/, repository/
@@ -225,9 +231,15 @@ new/
     plant-disease-seed-template.csv
   mobile/                     # Expo app (UPAVANA UI)
     src/screens/              # Home, Loading, Results, Error
+    src/components/           # FormattedGuidanceText
+    src/utils/                # formatGuidance
     src/context/              # Session diagnosis history
   src/                        # Separate Next.js marketing landing (not the mobile app)
-  AGENTS.md                   # Phase order & ground rules (updated 2026-09-23)
+  AGENTS.md                   # Phase order & ground rules
+  SYSTEM-OVERVIEW.md          # Shareable stack + flow
+  DATABASE.md                 # MySQL schema + SQL
+  REPO-STRUCTURE.md           # Monorepo + env map
+  docs/README.md              # Documentation index
   _bmad-output/
     project-context.md        # Agent rules (prefer over stale PRD for stack)
 ```
@@ -256,8 +268,8 @@ Suggested starting order for a new developer:
 1. **Answer OQ-1 with stakeholder** — name 3–5 must-pass plant+disease pairs; seed CSV; capture test photos (PRD blocker).
 2. **Pick synthesis provider for demo** — align env (`ACTIVE_SYNTHESIS_PROVIDER`) with keys you have; document the choice for the team. PRD target remains OpenAI `gpt-4o` when billing allows.
 3. **Run manual E2E** — real photo through mobile → backend with live APIs; explicitly test **primary failure → NVIDIA text fallback** (DAC-6). No script exists in repo.
-4. **Reconcile docs** — PRD/addendum/spine/backend README still disagree with code on synthesis default and `.env` loading; `AGENTS.md` and `project-context.md` were updated on `main` in `c659296`.
-5. **Decide fate of unmerged branches** — merge, cherry-pick, or discard `cursor/diagnosis-priority-formatted-solution` and `backup/pre-rollback-2026-09-02` (vision pipeline / Gemini / health enforcement work).
+4. **Reconcile docs** — PRD/addendum/spine/backend README still disagree with code on synthesis default and `.env` loading; use root `SYSTEM-OVERVIEW.md`, `REPO-STRUCTURE.md`, and `DATABASE.md` for runtime truth.
+5. **Decide fate of `backup/pre-rollback-2026-09-02`** — cherry-pick or discard Gemini / `DiagnosisPipeline` work (separate from merged formatted-solution branch).
 6. **AGENTS.md phase 5** — follow-up chat not built.
 7. **Hardening from deferred-work** — vision null guard, prompt size caps, auth on `/api/admin/seed` before any public deploy.
 
@@ -270,9 +282,9 @@ Please confirm manually:
 | Topic | Gap |
 |-------|-----|
 | **Your machine’s active synthesis provider** | Depends on **your** `backend/.env` / OS env, not repo default alone. This doc does not read your secrets. |
-| **End-to-end diagnosis with real images** | Not run as part of writing this file; only `mvnw test` (mocked AI) was run on **2026-09-23**. |
+| **End-to-end diagnosis with real images** | Not run as part of this update; `mvnw test` (mocked AI) passed on **2026-09-24** after merge `f5f6aee`. |
 | **NVIDIA fallback E2E** | PRD requires it before demo; **no proof** it was executed recently. |
-| **Diagnosis accuracy** | No claim that healthy/diseased labels are correct on real photos; known product issues were investigated on a **backup branch**, not shipped on `main`. |
+| **Diagnosis accuracy** | No claim that healthy/diseased labels are correct on all real photos; `DiagnosisHealthConsistency` on `main` is a light post-check, not full pipeline from backup branch. |
 | **Local DB row counts** | Depends on whether seed was run on your MySQL instance. |
 | **Groq / OpenAI / NIM availability** | External services; quotas, model deprecations, and latency change over time. |
 | **Stakeholder gates** | OQ-1 and formal demo checklist (PRD Appendix B) — status taken from PRD text, not a live stakeholder sign-off in repo. |
